@@ -1438,10 +1438,7 @@ function createStreamableEmbedElement(videoId) {
 
             if (messagesProcessedInViewer % updateInterval === 0 || messagesProcessedInViewer === totalMessagesToRender) {
                 let currentProgress = (messagesProcessedInViewer / totalMessagesToRender) * 90; // Up to 90% for this stage
-                let detailsStr = `Processing message ${messagesProcessedInViewer} of ${totalMessagesToRender}...`;
-                if (imagesFoundInViewer > 0 || videosFoundInViewer > 0) {
-                    detailsStr += ` Media: ${imagesFoundInViewer} imgs, ${videosFoundInViewer} vids.`;
-                }
+                let detailsStr = `Rendering messages (${messagesProcessedInViewer}/${totalMessagesToRender})...`; // Simplified
                 updateLoadingProgress(currentProgress, detailsStr);
             }
         }
@@ -1512,6 +1509,190 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             setTimeout(hideLoadingScreen, 500);
         });
     }
+
+// Helper function to populate attachmentDiv with media (images/videos)
+function _populateAttachmentDivWithMedia(
+    attachmentDiv, // The div to append media to
+    message,       // The message object
+    actualBoardForLink, // Board string for URLs
+    mediaLoadPromises,  // Array for async operations
+    uniqueImageViewerHashes, // Set for tracking unique images shown
+    isTopLevelMessage,     // Boolean, for some media logic (e.g., video stats)
+    layoutStyle,           // 'new_design' or 'default', to condition New Design specific logic
+    renderedFullSizeImageHashes, // Set for tracking full-size images
+    viewerTopLevelAttachedVideoHashes, // Set for video stats
+    otkMediaDB // IndexedDB instance
+) {
+    // Ensure message.attachment and message.attachment.ext exist before using them
+    if (!message.attachment || !message.attachment.ext) {
+        // consoleWarn(" populateAttachmentDivWithMedia: Attachment or extension missing.", message.id);
+        return; // Nothing to process
+    }
+
+    const extLower = message.attachment.ext.toLowerCase();
+    const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`;
+
+    if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
+        // --- IMAGE LOGIC ---
+        // Unified image logic (derived from New Design's more feature-rich version)
+        let defaultToThumbnail;
+        let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
+
+        if (layoutStyle === 'new_design') {
+            if (isTopLevelMessage) {
+                defaultToThumbnail = !isFirstFullSizeRender;
+            } else { // Quoted message in New Design
+                defaultToThumbnail = true;
+            }
+            if (isFirstFullSizeRender && isTopLevelMessage) { // Only add to set if it's going to be shown full size initially for top-level new design
+                renderedFullSizeImageHashes.add(filehash);
+            }
+        } else { // Default layout image logic
+            defaultToThumbnail = !isFirstFullSizeRender; // Show full if first time this hash is rendered full-size, else thumb.
+            if (isFirstFullSizeRender) {
+                 renderedFullSizeImageHashes.add(filehash); // Track for default layout as well
+            }
+        }
+
+        const img = document.createElement('img');
+        img.dataset.filehash = filehash;
+        img.dataset.thumbWidth = message.attachment.tn_w;
+        img.dataset.thumbHeight = message.attachment.tn_h;
+        img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
+        img.style.cursor = 'pointer';
+        img.style.display = 'block';
+        img.style.borderRadius = '3px';
+
+        const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+        const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
+        img.dataset.fullSrc = webFullSrc;
+        img.dataset.thumbSrc = webThumbSrc;
+
+        const setImageProperties = () => {
+            if (img.dataset.isThumbnail === 'true') {
+                img.src = img.dataset.thumbSrc;
+                img.style.width = img.dataset.thumbWidth + 'px';
+                img.style.height = img.dataset.thumbHeight + 'px';
+                img.style.maxWidth = ''; img.style.maxHeight = '';
+            } else {
+                img.src = img.dataset.fullSrc;
+                img.style.maxWidth = '100%'; 
+                // Max height slightly different based on context in original code
+                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px'; // Adjusted quoted default slightly
+                img.style.width = 'auto'; img.style.height = 'auto';
+            }
+        };
+        setImageProperties();
+
+        img.addEventListener('click', () => {
+            const currentlyThumbnail = img.dataset.isThumbnail === 'true';
+            if (currentlyThumbnail) {
+                img.src = img.dataset.fullSrc;
+                img.style.maxWidth = '100%'; 
+                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px';
+                img.style.width = 'auto'; img.style.height = 'auto';
+                img.dataset.isThumbnail = 'false';
+                if (!renderedFullSizeImageHashes.has(filehash)) { 
+                    renderedFullSizeImageHashes.add(filehash);
+                }
+            } else {
+                img.src = img.dataset.thumbSrc;
+                img.style.width = img.dataset.thumbWidth + 'px';
+                img.style.height = img.dataset.thumbHeight + 'px';
+                img.style.maxWidth = ''; img.style.maxHeight = '';
+                img.dataset.isThumbnail = 'true';
+            }
+        });
+
+        if (message.attachment.localStoreId && otkMediaDB) {
+            mediaLoadPromises.push(new Promise((resolveMedia) => {
+                const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                const store = transaction.objectStore('mediaStore');
+                const request = store.get(message.attachment.localStoreId); 
+                request.onsuccess = (event) => {
+                    const storedItem = event.target.result;
+                    if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
+                        blobToDataURL(storedItem.blob)
+                            .then(dataURL => {
+                                img.dataset.fullSrc = dataURL;
+                                if (img.dataset.isThumbnail === 'false') img.src = dataURL;
+                                uniqueImageViewerHashes.add(filehash); resolveMedia();
+                            }).catch(err => { consoleError(`Error converting full blob for ${filehash}: ${err}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); });
+                    } else { uniqueImageViewerHashes.add(filehash); resolveMedia(); }
+                };
+                request.onerror = (event) => { consoleError(`Error fetching full image ${filehash} from IDB: ${event.target.error}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); };
+            }));
+        } else { 
+            uniqueImageViewerHashes.add(filehash);
+        }
+
+        if (message.attachment.localThumbStoreId && otkMediaDB) {
+            mediaLoadPromises.push(new Promise((resolveMedia) => {
+                const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                const store = transaction.objectStore('mediaStore');
+                const request = store.get(message.attachment.localThumbStoreId);
+                request.onsuccess = (event) => {
+                    const storedItem = event.target.result;
+                    if (storedItem && storedItem.blob && storedItem.isThumbnail) {
+                        blobToDataURL(storedItem.blob)
+                            .then(dataURL => {
+                                img.dataset.thumbSrc = dataURL;
+                                if (img.dataset.isThumbnail === 'true') img.src = dataURL;
+                                resolveMedia();
+                            }).catch(err => { consoleError(`Error converting thumb blob for ${filehash}: ${err}`); resolveMedia(); });
+                    } else { resolveMedia(); }
+                };
+                request.onerror = (event) => { consoleError(`Error fetching thumb ${filehash} from IDB: ${event.target.error}`); resolveMedia(); };
+            }));
+        }
+        attachmentDiv.appendChild(img);
+
+    } else if (extLower.endsWith('webm') || extLower.endsWith('mp4')) {
+        // --- VIDEO LOGIC ---
+        const setupVideo = (src) => {
+            const videoElement = document.createElement('video');
+            if (!message.attachment.tim || !message.attachment.ext) {
+                consoleError(`Video attachment for message ${message.id} is missing 'tim' or 'ext'. Cannot construct video src.`);
+                // Potentially don't append, or append a placeholder? For now, it will have no src.
+            } else {
+                videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`; // Ensure ext has a dot
+            }
+            videoElement.controls = true;
+            videoElement.style.maxWidth = '100%'; 
+            videoElement.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '300px'; 
+            videoElement.style.borderRadius = '3px'; 
+            videoElement.style.display = 'block';
+            attachmentDiv.appendChild(videoElement);
+            if (message.attachment.filehash_db_key && isTopLevelMessage) {
+                viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
+            }
+        };
+
+        if (message.attachment.localStoreId && otkMediaDB) {
+            mediaLoadPromises.push(new Promise((resolveMedia) => {
+                const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                const store = transaction.objectStore('mediaStore');
+                const request = store.get(message.attachment.localStoreId);
+                request.onsuccess = (event) => {
+                    const storedItem = event.target.result;
+                    if (storedItem && storedItem.blob) {
+                        setupVideo(URL.createObjectURL(storedItem.blob));
+                    } else {
+                        setupVideo(null);
+                    }
+                    resolveMedia();
+                };
+                request.onerror = (event) => {
+                    consoleError(`Error fetching video ${filehash} from IDB: ${event.target.error}`);
+                    setupVideo(null);
+                    resolveMedia();
+                };
+            }));
+        } else {
+            setupVideo(null);
+        }
+    }
+}
 
     // Signature includes isTopLevelMessage, currentDepth, and threadColor
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
@@ -1682,32 +1863,35 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
             const messageHeader = document.createElement('div');
             messageHeader.className = 'otk-header-div';
+            messageHeader.style.justifyContent = 'flex-start'; // Override CSS for left alignment
 
             const timestampParts = formatTimestampForHeader(message.time);
-            const headerLeft = document.createElement('span');
-            const headerRight = document.createElement('span');
+            const headerContent = document.createElement('span'); // Use a single span for all content
 
-            if (isTopLevelMessage) {
-                headerLeft.textContent = `${timestampParts.time} ${timestampParts.date}`;
-                headerRight.textContent = `#${message.id}`;
-            } else { // Quoted message
-                headerLeft.textContent = `⤷ ${timestampParts.time} ${timestampParts.date}`;
-                headerRight.textContent = `#${message.id}`;
+            let prefix = "";
+            if (!isTopLevelMessage) {
+                prefix = "⤷ ";
             }
-            messageHeader.appendChild(headerLeft);
-            messageHeader.appendChild(headerRight);
+            
+            headerContent.textContent = `${prefix}#${message.id} | ${timestampParts.time} | ${timestampParts.date}`;
+            
+            messageHeader.appendChild(headerContent);
             textWrapperDiv.appendChild(messageHeader);
 
             if (shouldDisableUnderline) {
                 messageHeader.style.borderBottom = 'none';
                 messageHeader.style.paddingBottom = '0px';
-                // Adjust margin slightly if underline is removed, to prevent too much squish if content is short
-                // but allow closer text if content is long. Default CSS margin-bottom is 8px.
-                // messageHeader.style.marginBottom = '4px'; // Optional: finer control over spacing
+                messageHeader.style.marginBottom = '0px';
+                messageHeader.style.lineHeight = '1.1'; 
+                messageHeader.style.minHeight = '0';
             }
 
             const textElement = document.createElement('div');
             textElement.className = 'otk-content-div'; // Apply class for styling
+            if (shouldDisableUnderline) { // Apply to all depths when underline is hidden
+                textElement.style.marginTop = '0px';
+                textElement.style.paddingTop = '0px';
+            }
             // The white-space, overflow-wrap, word-break are handled by CSS class '.otk-content-div'
 
             // Process currentMessageOwnText for embeds and remaining text
@@ -1891,15 +2075,19 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.textContent = message.text || '';
             }
 
+            if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
+                textElement.removeChild(textElement.firstChild);
+            }
+
             textWrapperDiv.appendChild(textElement);
             postDiv.appendChild(textWrapperDiv);
             messageDiv.appendChild(postDiv); // Append the postDiv after any block quotes
 
             // Attachment handling (can be similar to original, appended to messageDiv)
             if (message.attachment && message.attachment.tim) {
+                const actualBoardForLink = boardForLink || message.board || 'b'; // Define actualBoardForLink here
                 const attachmentDiv = document.createElement('div');
                 attachmentDiv.style.marginTop = '10px'; // Standard margin for attachments
-                const actualBoardForLink = boardForLink || message.board || 'b'; // Define actualBoardForLink here
                 // ... (rest of attachment logic is complex and largely reusable, will integrate carefully)
                 // For now, let's assume the attachment logic from the 'else' block can be adapted and called here.
                 // This includes filename link, image/video display, IDB loading.
@@ -1909,7 +2097,6 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 if (shouldDisplayFilenames) {
                     const filenameLink = document.createElement('a');
                     filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
-                    // const actualBoardForLink = boardForLink || message.board || 'b'; // Moved up
                     filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
                     filenameLink.target = "_blank";
                     // Use shared link styling for attachments for consistency, or new design specific if needed
@@ -1917,142 +2104,20 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                     attachmentDiv.appendChild(filenameLink);
                 }
 
-                const extLower = message.attachment.ext.toLowerCase();
-                const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`;
-
-                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
-                    let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
-                    // Logic for new theme:
-                    // Top-level messages: show full if isFirstFullSizeRender, else thumb.
-                    // Quoted messages: always show thumb by default.
-                    let defaultToThumbnail;
-                    if (isTopLevelMessage) {
-                        defaultToThumbnail = !isFirstFullSizeRender;
-                    } else { // Quoted message
-                        defaultToThumbnail = true;
-                    }
-
-                    if (isFirstFullSizeRender && isTopLevelMessage) { // Only add to set if it's going to be shown full size initially
-                        renderedFullSizeImageHashes.add(filehash);
-                    }
-
-                    const img = document.createElement('img');
-                    img.dataset.filehash = filehash;
-                    img.dataset.thumbWidth = message.attachment.tn_w;
-                    img.dataset.thumbHeight = message.attachment.tn_h;
-                    img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
-                    img.style.cursor = 'pointer';
-                    img.style.display = 'block';
-                    img.style.borderRadius = '3px';
-
-                    const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                    const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
-                    img.dataset.fullSrc = webFullSrc;
-                    img.dataset.thumbSrc = webThumbSrc;
-
-                    const setImageProperties = () => {
-                        if (img.dataset.isThumbnail === 'true') {
-                            img.src = img.dataset.thumbSrc;
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = ''; img.style.maxHeight = '';
-                        } else {
-                            img.src = img.dataset.fullSrc;
-                            img.style.maxWidth = '100%'; img.style.maxHeight = '400px'; // Max height for full view
-                            img.style.width = 'auto'; img.style.height = 'auto';
-                        }
-                    };
-                    setImageProperties(); // Initial set
-
-                    img.addEventListener('click', () => {
-                        const currentlyThumbnail = img.dataset.isThumbnail === 'true';
-                        if (currentlyThumbnail) {
-                            img.src = img.dataset.fullSrc;
-                            img.style.maxWidth = '100%'; img.style.maxHeight = '400px';
-                            img.style.width = 'auto'; img.style.height = 'auto';
-                            img.dataset.isThumbnail = 'false';
-                            if (!renderedFullSizeImageHashes.has(filehash)) { // If toggled to full, ensure it's marked as rendered full-size
-                                renderedFullSizeImageHashes.add(filehash);
-                            }
-                        } else {
-                            img.src = img.dataset.thumbSrc;
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = ''; img.style.maxHeight = '';
-                            img.dataset.isThumbnail = 'true';
-                        }
-                    });
-
-                    // IDB loading logic (copied and adapted from default theme path)
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.fullSrc = dataURL;
-                                            if (img.dataset.isThumbnail === 'false') img.src = dataURL;
-                                            uniqueImageViewerHashes.add(filehash); resolveMedia();
-                                        }).catch(err => { consoleError(`Error converting full blob: ${err}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); });
-                                } else { uniqueImageViewerHashes.add(filehash); resolveMedia(); }
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching full image from IDB: ${event.target.error}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); };
-                        }));
-                    } else { uniqueImageViewerHashes.add(filehash); }
-
-                    if (message.attachment.localThumbStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localThumbStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.thumbSrc = dataURL;
-                                            if (img.dataset.isThumbnail === 'true') img.src = dataURL;
-                                            resolveMedia();
-                                        }).catch(err => { consoleError(`Error converting thumb blob: ${err}`); resolveMedia(); });
-                                } else { resolveMedia(); }
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching thumb from IDB: ${event.target.error}`); resolveMedia(); };
-                        }));
-                    }
-                    attachmentDiv.appendChild(img);
-
-                } else if (['.webm', '.mp4'].includes(extLower)) {
-                    // Video handling (copied and adapted from default theme path)
-                    const setupVideo = (src) => {
-                        const videoElement = document.createElement('video');
-                        videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`;
-                        videoElement.controls = true;
-                        videoElement.style.maxWidth = '100%'; videoElement.style.maxHeight = '400px'; // Consistent max height
-                        videoElement.style.borderRadius = '3px'; videoElement.style.display = 'block';
-                        attachmentDiv.appendChild(videoElement);
-                        if (message.attachment.filehash_db_key && isTopLevelMessage) { // Stats only for top-level
-                            viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
-                        }
-                    };
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob) setupVideo(URL.createObjectURL(storedItem.blob));
-                                else setupVideo(null);
-                                resolveMedia();
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching video from IDB: ${event.target.error}`); setupVideo(null); resolveMedia(); };
-                        }));
-                    } else { setupVideo(null); }
-                }
+                // Call helper function to populate media
+                _populateAttachmentDivWithMedia(
+                    attachmentDiv,
+                    message,
+                    actualBoardForLink,
+                    mediaLoadPromises,
+                    uniqueImageViewerHashes,
+                    isTopLevelMessage,
+                    'new_design', // layoutStyle
+                    renderedFullSizeImageHashes, // Specific to New Design image handling
+                    viewerTopLevelAttachedVideoHashes,
+                    otkMediaDB
+                );
+                
                  if (attachmentDiv.hasChildNodes()) {
                     textWrapperDiv.appendChild(attachmentDiv);
                 }
@@ -2137,28 +2202,30 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
             let headerBorderBottomStyle = `1px solid ${headerBorderVar}`;
             let headerPaddingBottomStyle = '5px';
-            let headerDisplayStlye = 'flex'; // Default display style for the header
+            // let headerDisplayStlye = 'flex'; // Default display style for the header - will be set directly
 
-            if (shouldDisableUnderline) { // This key now corresponds to "Hide Message Header"
-                // Instead of modifying border/padding, we hide the header entirely
-                headerDisplayStlye = 'none';
-                // No need to explicitly set border/padding to none if the element itself is not displayed.
-                // However, if we wanted to keep the element in flow but invisible (占位),
-                // we might set visibility: hidden and ensure its height collapses.
-                // For display: none, it's removed from flow, so border/padding adjustments are moot.
-            }
+            // if (shouldDisableUnderline) { // This logic will be handled after initial style.cssText set
+            // }
 
             messageHeader.style.cssText = `
                 font-size: 12px;
                 color: ${ isTopLevelMessage ? 'var(--otk-msg-depth0-header-text-color)' : (currentDepth === 1 ? 'var(--otk-msg-depth1-header-text-color)' : 'var(--otk-msg-depth2plus-header-text-color)') };
                 font-weight: bold;
-                margin-bottom: 8px;
-                padding-bottom: ${headerPaddingBottomStyle}; /* Still set, but won't matter if display is none */
-                border-bottom: ${headerBorderBottomStyle}; /* Still set, but won't matter if display is none */
-                display: ${headerDisplayStlye};
+                margin-bottom: 8px; /* Default margin */
+                padding-bottom: ${headerPaddingBottomStyle}; /* Default padding for underline */
+                border-bottom: ${headerBorderBottomStyle}; /* Default border for underline */
+                display: flex; /* Default display */
                 align-items: center;
                 width: 100%;
             `;
+
+            if (shouldDisableUnderline) {
+                messageHeader.style.borderBottom = 'none';
+                messageHeader.style.paddingBottom = '0px';
+                messageHeader.style.marginBottom = '0px'; // Standardized to 0px for all depths when underline hidden
+                messageHeader.style.lineHeight = '1.1';   // Standardized
+                messageHeader.style.minHeight = '0';      // Standardized
+            }
 
             const timestampParts = formatTimestampForHeader(message.time);
 
@@ -2220,6 +2287,11 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.style.fontSize = 'var(--otk-msg-depth1-content-font-size)';
             } else { // currentDepth >= 2
                 textElement.style.fontSize = 'var(--otk-msg-depth2plus-content-font-size)';
+            }
+
+            if (shouldDisableUnderline) { // Apply to all depths when underline is hidden
+                textElement.style.marginTop = '0px';
+                textElement.style.paddingTop = '0px';
             }
 
             if (message.text && typeof message.text === 'string') {
@@ -2446,6 +2518,10 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.textContent = message.text || ''; // Handle null or undefined message.text
             }
 
+            if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
+                textElement.removeChild(textElement.firstChild);
+            }
+
             messageDiv.appendChild(textElement);
 
             // Generate a unique instance ID for this specific DOM element
@@ -2546,220 +2622,32 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             }
 
             if (message.attachment && message.attachment.tim) {
+                const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
                 const attachmentDiv = document.createElement('div');
                 attachmentDiv.style.marginTop = '10px';
 
                 if (shouldDisplayFilenames) {
                     const filenameLink = document.createElement('a');
                     filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
-                    const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
                     filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
                     filenameLink.target = "_blank";
                     filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
                     attachmentDiv.appendChild(filenameLink);
                 }
 
-                const extLower = message.attachment.ext.toLowerCase();
-                const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`; // Fallback to tim+ext if no hash
-
-                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
-                    // Image handling with toggle logic
-                    let isFirstInstance = !renderedFullSizeImageHashes.has(filehash);
-                    if (isFirstInstance) {
-                        renderedFullSizeImageHashes.add(filehash);
-                    }
-
-                    const img = document.createElement('img');
-                    img.dataset.filehash = filehash;
-                    // img.dataset.thumbSrc is now set asynchronously
-                    img.dataset.thumbWidth = message.attachment.tn_w;
-                    img.dataset.thumbHeight = message.attachment.tn_h;
-                    img.dataset.isThumbnail = isFirstInstance ? 'false' : 'true'; // Determines initial display mode
-                    img.style.cursor = 'pointer';
-                    img.style.display = 'block';
-                    img.style.borderRadius = '3px';
-
-                    // Fallback web URLs
-                    const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                    const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
-
-                    img.dataset.fullSrc = webFullSrc; // Default to web URL, updated if local found
-                    img.dataset.thumbSrc = webThumbSrc; // Default to web URL, updated if local found
-
-                    const setImageProperties = () => {
-                        if (img.dataset.isThumbnail === 'true') {
-                            img.src = img.dataset.thumbSrc; // This will be local dataURL or web URL
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = '';
-                            img.style.maxHeight = '';
-                        } else {
-                            img.src = img.dataset.fullSrc; // This will be local dataURL or web URL
-                            img.style.maxWidth = '100%';
-                            img.style.maxHeight = '400px';
-                            img.style.width = 'auto';
-                            img.style.height = 'auto';
-                        }
-                        // Add to uniqueImageViewerHashes only once, e.g., after full image processing promise resolves.
-                        // Or here, if we assume it's a unique image being processed.
-                        // Let's keep it tied to the full image processing.
-                    };
-
-                    // Initially set properties based on web URLs or if one of them is already a data URL (e.g. from a previous step)
-                    setImageProperties();
-
-
-                    img.addEventListener('click', () => {
-                        const currentlyThumbnail = img.dataset.isThumbnail === 'true';
-                        if (currentlyThumbnail) { // Toggle to full
-                            img.src = img.dataset.fullSrc; // Uses local dataURL or web URL
-                            img.style.maxWidth = '100%';
-                            img.style.maxHeight = '400px';
-                            img.style.width = 'auto';
-                            img.style.height = 'auto';
-                            img.dataset.isThumbnail = 'false';
-                        } else { // Toggle to thumbnail
-                            img.src = img.dataset.thumbSrc; // Uses local dataURL or web URL
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = '';
-                            img.style.maxHeight = '';
-                            img.dataset.isThumbnail = 'true';
-                        }
-                    });
-
-                    // Promise for loading full-size image from IDB
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.fullSrc = dataURL; // Update with local dataURL
-                                            if (img.dataset.isThumbnail === 'false') { // If currently showing full, update src
-                                                img.src = dataURL;
-                                            }
-                                            uniqueImageViewerHashes.add(filehash); // Add to stats once full image is confirmed/processed
-                                            resolveMedia();
-                                        })
-                                        .catch(err => {
-                                            consoleError(`Error converting full image blob to Data URL for ${message.attachment.localStoreId}:`, err);
-                                            uniqueImageViewerHashes.add(filehash); // Still count it for stats even if fallback to web
-                                            resolveMedia(); // Resolve even on error, using web fallback
-                                        });
-                                } else {
-                                    if (storedItem && storedItem.isThumbnail) consoleWarn(`Expected full image but found thumb in IDB for ${message.attachment.localStoreId}`);
-                                    else if (!storedItem) consoleWarn(`Full image blob not found in IDB for ${message.attachment.localStoreId}. Using web URL.`);
-                                    uniqueImageViewerHashes.add(filehash); // Still count it
-                                    resolveMedia();
-                                }
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching full image ${message.attachment.localStoreId} from IDB:`, event.target.error);
-                                uniqueImageViewerHashes.add(filehash); // Still count it
-                                resolveMedia();
-                            };
-                        }));
-                    } else {
-                         uniqueImageViewerHashes.add(filehash); // No local full image, count based on web presence
-                    }
-
-                    // Promise for loading thumbnail image from IDB
-                    if (message.attachment.localThumbStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localThumbStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.thumbSrc = dataURL; // Update with local dataURL for thumbnail
-                                            if (img.dataset.isThumbnail === 'true') { // If currently showing thumb, update src
-                                                img.src = dataURL;
-                                            }
-                                            resolveMedia();
-                                        })
-                                        .catch(err => {
-                                            consoleError(`Error converting thumbnail blob to Data URL for ${message.attachment.localThumbStoreId}:`, err);
-                                            resolveMedia(); // Resolve even on error, using web fallback for thumb
-                                        });
-                                } else {
-                                    if (storedItem && !storedItem.isThumbnail) consoleWarn(`Expected thumbnail but found full image in IDB for ${message.attachment.localThumbStoreId}`);
-                                    else if (!storedItem) consoleWarn(`Thumbnail blob not found in IDB for ${message.attachment.localThumbStoreId}. Using web URL.`);
-                                    resolveMedia();
-                                }
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching thumbnail ${message.attachment.localThumbStoreId} from IDB:`, event.target.error);
-                                resolveMedia();
-                            };
-                        }));
-                    }
-                    // If no localThumbStoreId, it defaults to webThumbSrc already set.
-                    attachmentDiv.appendChild(img);
-
-                } else if (['.webm', '.mp4'].includes(extLower)) {
-                    // Video handling: CSP might also affect blobs for videos.
-                    // For now, let's assume videos are less common or direct 4cdn links are fine.
-                    // If videos also break, they'll need similar dataURL or a different strategy.
-                    let videoSrc = null;
-                    const setupVideo = (src) => {
-                        const videoElement = document.createElement('video');
-                        // if (src && src.startsWith('blob:')) { // Only revoke if it's a blob URL
-                            // videoElement.onloadeddata = () => URL.revokeObjectURL(src); // Commented out for now
-                            // videoElement.onerror = () => URL.revokeObjectURL(src); // Commented out for now
-                        // }
-                        // Note: By not revoking, blob URLs will persist. This fixes playback after refresh/append,
-                        // but a more sophisticated memory management strategy for these URLs might be needed later.
-                        videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`; // Fallback
-                        videoElement.controls = true;
-                        videoElement.style.maxWidth = '100%';
-                        videoElement.style.maxHeight = '400px'; // Consistent max height
-                        videoElement.style.borderRadius = '3px';
-                        videoElement.style.display = 'block';
-                        attachmentDiv.appendChild(videoElement);
-                        if (message.attachment.filehash_db_key) {
-                            if (isTopLevelMessage) {
-                                viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
-                            }
-                            // uniqueVideoViewerHashes.add() removed as it's now obsolete for stats.
-                        }
-                    };
-
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                         mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob) {
-                                    videoSrc = URL.createObjectURL(storedItem.blob);
-                                    setupVideo(videoSrc);
-                                } else {
-                                    setupVideo(null); // Fallback to web URL
-                                }
-                                resolveMedia();
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching video ${message.attachment.localStoreId} from IDB:`, event.target.error);
-                                setupVideo(null); // Fallback to web URL
-                                resolveMedia();
-                            };
-                        }));
-                    } else {
-                        setupVideo(null); // No local, use web URL
-                    }
-                }
-                // Fallback for other file types or if something went wrong (though images/videos are main media)
-                // This part might need adjustment if createThumbnailElement was handling non-image/video files too.
-                // For now, assume if not image/video, it doesn't go through this specific media path.
+                // Call helper function to populate media
+                _populateAttachmentDivWithMedia(
+                    attachmentDiv,
+                    message,
+                    actualBoardForLink,
+                    mediaLoadPromises,
+                    uniqueImageViewerHashes,
+                    isTopLevelMessage,
+                    'default', // layoutStyle
+                    renderedFullSizeImageHashes, // Pass for consistent image thumbnail logic
+                    viewerTopLevelAttachedVideoHashes,
+                    otkMediaDB
+                );
 
                 if (attachmentDiv.hasChildNodes()) {
                     messageDiv.appendChild(attachmentDiv);
@@ -2799,9 +2687,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 width: 100%; /* Ensure it spans the container if not already */
                 box-sizing: border-box; /* Include padding in width calculation */
             `;
-            const now = new Date();
-            const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            separatorDiv.textContent = `--- New messages below loaded at ${timeString} ---`;
+            const currentDate = new Date().toLocaleDateString(); // Using default locale format for date
+            separatorDiv.textContent = `--- ${currentDate} : ${newMessages.length} New Messages Loaded ---`;
             messagesContainer.appendChild(separatorDiv);
             consoleLog("[appendNewMessagesToViewer] Appended separator line.");
         }
@@ -3416,9 +3303,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 const progressPercentage = 15 + Math.round((threadsProcessedCount / totalThreadsToProcess) * 75); // 15% (catalog) + 75% (fetching/processing)
 
                 let statusText = `Processing thread ${threadsProcessedCount}/${totalThreadsToProcess} (ID: ${threadId})...`;
-                if (totalNewMessagesThisRefresh > 0 || totalNewImagesThisRefresh > 0) {
-                    statusText += `\nSo far: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
-                }
+                // Removed detailed message/media counts from this loading screen update
                 updateLoadingProgress(progressPercentage, statusText);
 
                 try {
@@ -3465,7 +3350,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             }
 
             // Final update to loading screen after loop
-            let finalStatusText = `Refresh complete. Added: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
+            let finalStatusText = `Refresh processing complete. Finalizing...`; // Simplified
             updateLoadingProgress(90, finalStatusText);
 
 
@@ -4002,7 +3887,7 @@ function handleIntersection(entries, observerInstance) {
                     if (iframe.src && iframe.src !== 'about:blank') {
                         consoleLog('[LazyLoad] Unloading iframe (scrolled out of view):', iframe.src);
                         // Attempt to pause YouTube videos via postMessage (best effort)
-                        if (iframe.src.includes("youtube.com/embed")) {
+                    if (iframe.contentWindow && iframe.src.includes("youtube.com/embed")) { // Check 2: src is a YouTube embed & contentWindow exists
                             try {
                                 iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', 'https://www.youtube.com');
                             } catch (e) {
@@ -5028,7 +4913,7 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' })); // Default for original theme, new theme uses #333
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' })); // Default for original theme, new theme uses #555
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-header-border' }));
-    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Header:", storageKey: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' }));
     themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth0DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth0-display-media-filename' }));
 
     // --- Depth 1 Messages Section ---
@@ -5041,7 +4926,7 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
-    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Header:", storageKey: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' }));
     themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth1DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth1-display-media-filename' }));
 
     // --- Depth 2+ Messages Section ---
@@ -5054,7 +4939,7 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
-    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Header:", storageKey: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' }));
     themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth2plusDisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth2plus-display-media-filename' }));
 
     // --- Options Panel Section ---
