@@ -4,7 +4,6 @@
 // @version      2.7
 // @description  Tracks OTK threads on /b/, stores messages and media, shows top bar with colors and controls, removes inactive threads entirely
 // @match        https://boards.4chan.org/b/
-// @grant        GM_xmlhttpRequest
 // @grant        none
 // ==/UserScript==
 
@@ -268,7 +267,7 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
 }
 
 // Helper function for processing text segments (either append as text or handle as quote)
-async function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises) {
+function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises) {
     // Note: mediaLoadPromises is passed down in case quote recursion generates media elements that need tracking.
     // However, createMessageElementDOM for quotes currently passes an empty array for it. This could be enhanced.
     const quoteMatch = segment.match(quoteRegex);
@@ -299,7 +298,7 @@ async function appendTextOrQuoteSegment(textElement, segment, quoteRegex, curren
         }
 
         if (quotedMessageObject) {
-            const quotedElement = await createMessageElementDOM(
+            const quotedElement = createMessageElementDOM(
                 quotedMessageObject,
                 mediaLoadPromises, // Pass down mediaLoadPromises
                 uniqueImageViewerHashes,
@@ -324,7 +323,7 @@ async function appendTextOrQuoteSegment(textElement, segment, quoteRegex, curren
         if (restOfSegment.length > 0) {
             // Recursively process the rest of the segment for more quotes or text
             // This is important if a line is like ">>123 >>456 text"
-            await appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
         }
     } else {
         // Not a quote at the start of the segment (or not a quote at all), just plain text for this segment
@@ -896,15 +895,18 @@ function createStreamableEmbedElement(videoId) {
         .map(id => Number(id))
         .filter(id => !isNaN(id) && !droppedThreadIds.includes(id));
 
-    // The aggressive data cleanup loop that was here has been removed.
-    // It was incorrectly deleting message and color data for threads that were
-    // temporarily not in the catalog at the time of script initialization.
-    // Now, all message and color data is loaded, and threads are only
-    // removed from active fetching if they 404 or are explicitly dropped.
-
+    for (const threadId in messagesByThreadId) {
+        if (!activeThreads.includes(Number(threadId))) {
+            consoleLog(`Removing thread ${threadId} from messagesByThreadId during initialization (not in activeThreads or in droppedThreadIds).`);
+            delete messagesByThreadId[threadId];
+            delete threadColors[threadId];
+        }
+    }
     // Clean up droppedThreadIds after processing
     localStorage.removeItem(DROPPED_THREADS_KEY); // This seems to be a one-time cleanup
-    localStorage.setItem(THREADS_KEY, JSON.stringify(activeThreads)); // Still save the cleaned activeThreads list
+    localStorage.setItem(THREADS_KEY, JSON.stringify(activeThreads));
+    localStorage.setItem(MESSAGES_KEY, JSON.stringify(messagesByThreadId));
+    localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
     consoleLog('Initialized activeThreads from localStorage:', activeThreads);
 
 
@@ -1413,15 +1415,15 @@ function createStreamableEmbedElement(videoId) {
         const mediaLoadPromises = [];
         const updateInterval = Math.max(1, Math.floor(totalMessagesToRender / 20)); // Update progress roughly 20 times or every message
 
-        for (const message of allMessages) {
+        for (let i = 0; i < totalMessagesToRender; i++) {
+            const message = allMessages[i];
             renderedMessageIdsInViewer.add(message.id);
 
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId);
 
-            const messageElement = await createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
             messagesContainer.appendChild(messageElement);
-            loadTweetScript(messageElement);
 
             messagesProcessedInViewer++;
 
@@ -1691,19 +1693,8 @@ function _populateAttachmentDivWithMedia(
     }
 }
 
-    function loadTweetScript(container) {
-        const scriptSrc = container.dataset.scriptSrc;
-        if (scriptSrc) {
-            const newScript = document.createElement('script');
-            newScript.src = scriptSrc;
-            newScript.async = true;
-            document.body.appendChild(newScript);
-            delete container.dataset.scriptSrc; // Remove the attribute to prevent re-loading
-        }
-    }
-
     // Signature includes isTopLevelMessage, currentDepth, and threadColor
-    async function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
+    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
         const layoutStyle = localStorage.getItem('otkMessageLayoutStyle') || 'default';
         consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}, layoutStyle: ${layoutStyle}`);
 
@@ -1762,71 +1753,7 @@ function _populateAttachmentDivWithMedia(
         const inlineStreamablePatterns = [
             { type: 'video', regex: /(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
         ];
-
-    const twitterPatterns = [
-        { regex: /^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/[a-zA-Z0-9_]+\/status\/(\d+)/, idGroup: 1 }
-    ];
         // --- End of media pattern definitions ---
-
-    // --- Tweet Embedding ---
-    const tweetCache = new Map();
-
-    function createTweetEmbedElement(tweetId, theme) {
-        const cacheKey = `${tweetId}_${theme}`;
-        if (tweetCache.has(cacheKey)) {
-            const cachedElement = tweetCache.get(cacheKey).cloneNode(true);
-            consoleLog(`[TweetEmbed] Loading tweet ${tweetId} from cache.`);
-            return Promise.resolve(cachedElement);
-        }
-
-        const container = document.createElement('div');
-        container.style.margin = '10px 0';
-
-        const loadingPlaceholder = document.createElement('div');
-        loadingPlaceholder.textContent = `Loading tweet ${tweetId}...`;
-        loadingPlaceholder.style.padding = '10px';
-        loadingPlaceholder.style.border = '1px solid #555';
-        loadingPlaceholder.style.borderRadius = '4px';
-        container.appendChild(loadingPlaceholder);
-
-        return new Promise((resolve) => {
-            const apiUrl = `https://api.fxtwitter.com/status/${tweetId}?theme=${theme}`;
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: apiUrl,
-                onload: function(response) {
-                    if (response.status >= 200 && response.status < 300) {
-                        const data = JSON.parse(response.responseText);
-                        if (data.code === 200 && data.tweet) {
-                            const embedHtml = data.tweet.html;
-                            container.innerHTML = embedHtml;
-                            const tweetScript = container.querySelector('script');
-                            if (tweetScript) {
-                                tweetScript.remove(); // Remove the script from the container
-                                const newScript = document.createElement('script');
-                                newScript.src = tweetScript.src;
-                                newScript.async = true;
-                                container.dataset.scriptSrc = tweetScript.src; // Store the script source
-                            }
-                            tweetCache.set(cacheKey, container.cloneNode(true));
-                            resolve(container);
-                        } else {
-                            loadingPlaceholder.textContent = `Error loading tweet ${tweetId}: ${data.message}`;
-                            resolve(container);
-                        }
-                    } else {
-                        loadingPlaceholder.textContent = `Error loading tweet ${tweetId}: ${response.statusText}`;
-                        resolve(container);
-                    }
-                },
-                onerror: function(error) {
-                    loadingPlaceholder.textContent = `Error loading tweet ${tweetId}: Network error.`;
-                    consoleError('[TweetEmbed] Network error:', error);
-                    resolve(container);
-                }
-            });
-        });
-    }
 
         if (layoutStyle === 'new_design') {
             const messageDiv = document.createElement('div');
@@ -1974,7 +1901,7 @@ function _populateAttachmentDivWithMedia(
                 const inlineQuoteRegex = />>(\d+)/;
 
 
-                for (const [lineIndex, line] of lines.entries()) {
+                lines.forEach((line, lineIndex) => {
                     const trimmedLine = line.trim();
                     let processedAsEmbed = false;
                     let soleUrlEmbedMade = false;
@@ -2002,24 +1929,6 @@ function _populateAttachmentDivWithMedia(
                         }
                     }
                     // Similar checks for Twitch and Streamable sole URLs... (omitted for brevity, but structure is the same)
-
-                    // Check for Sole Tweet URL
-                    if (!soleUrlEmbedMade) {
-                        const tweetTheme = localStorage.getItem('otkTweetEmbedTheme') || 'default';
-                        if (tweetTheme !== 'disabled') {
-                            for (const patternObj of twitterPatterns) {
-                                const match = trimmedLine.match(patternObj.regex);
-                                if (match) {
-                                    const tweetId = match[patternObj.idGroup];
-                                    if (tweetId) {
-                                        const embedElement = await createTweetEmbedElement(tweetId, tweetTheme);
-                                        textElement.appendChild(embedElement);
-                                        soleUrlEmbedMade = true; processedAsEmbed = true; break;
-                                    }
-                                }
-                            }
-                        }
-                    }
 
                     if (!soleUrlEmbedMade) {
                         let currentTextSegment = line;
@@ -2160,7 +2069,7 @@ function _populateAttachmentDivWithMedia(
                     if (lineIndex < lines.length - 1 && (trimmedLine.length > 0 || processedAsEmbed)) {
                         textElement.appendChild(document.createElement('br'));
                     }
-                }
+                });
             } else {
                 textElement.textContent = message.text || '';
             }
@@ -2208,10 +2117,10 @@ function _populateAttachmentDivWithMedia(
                     otkMediaDB
                 );
 
-                // Always append attachmentDiv if it has any content.
-                if (attachmentDiv.hasChildNodes()) {
-                    textWrapperDiv.appendChild(attachmentDiv);
-                }
+                // Always append attachmentDiv if message.attachment.tim exists,
+                // trusting _populateAttachmentDivWithMedia to handle content.
+                // Removed: if (attachmentDiv.hasChildNodes())
+                textWrapperDiv.appendChild(attachmentDiv);
             }
 
             // Click listener for anchoring (needs to be robust for new structure)
@@ -2444,7 +2353,7 @@ function _populateAttachmentDivWithMedia(
                 const lines = message.text.split('\n');
                 const quoteRegex = /^>>(\d+)/;
 
-                for (const [lineIndex, line] of lines.entries()) {
+                lines.forEach((line, lineIndex) => {
                     const trimmedLine = line.trim();
                     let processedAsEmbed = false;
 
@@ -2550,24 +2459,6 @@ function _populateAttachmentDivWithMedia(
                         }
                     }
 
-                    // Check for Sole Tweet URL
-                    if (!soleUrlEmbedMade) {
-                        const tweetTheme = localStorage.getItem('otkTweetEmbedTheme') || 'default';
-                        if (tweetTheme !== 'disabled') {
-                            for (const patternObj of twitterPatterns) {
-                                const match = trimmedLine.match(patternObj.regex);
-                                if (match) {
-                                    const tweetId = match[patternObj.idGroup];
-                                    if (tweetId) {
-                                        const embedElement = await createTweetEmbedElement(tweetId, tweetTheme);
-                                        textElement.appendChild(embedElement);
-                                        soleUrlEmbedMade = true; processedAsEmbed = true; break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     if (!soleUrlEmbedMade) {
                         let currentTextSegment = line;
 
@@ -2614,7 +2505,7 @@ function _populateAttachmentDivWithMedia(
                                 processedAsEmbed = true;
 
                                 if (earliestMatch.index > 0) {
-                                    await appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
                                 }
 
                                 const matchedUrl = earliestMatch[0];
@@ -2667,7 +2558,7 @@ function _populateAttachmentDivWithMedia(
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                             } else {
                                 if (currentTextSegment.length > 0) {
-                                    await appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
                                 }
                                 currentTextSegment = "";
                             }
@@ -2677,7 +2568,7 @@ function _populateAttachmentDivWithMedia(
                     if (lineIndex < lines.length - 1 && (trimmedLine.length > 0 || processedAsEmbed)) {
                         textElement.appendChild(document.createElement('br'));
                     }
-                }
+                });
             } else {
                 textElement.textContent = message.text || ''; // Handle null or undefined message.text
             }
@@ -2783,10 +2674,10 @@ function _populateAttachmentDivWithMedia(
                     otkMediaDB
                 );
 
-                // Always append attachmentDiv if it has any content.
-                if (attachmentDiv.hasChildNodes()) {
-                    messageDiv.appendChild(attachmentDiv);
-                }
+                // Always append attachmentDiv if message.attachment.tim exists,
+                // trusting _populateAttachmentDivWithMedia to handle content.
+                // Removed: if (attachmentDiv.hasChildNodes())
+                messageDiv.appendChild(attachmentDiv);
             }
             return messageDiv;
         } // End of else (default layout)
@@ -2833,9 +2724,8 @@ function _populateAttachmentDivWithMedia(
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId); // Get thread color for accent
             // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0
-            const messageElement = await createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
             messagesContainer.appendChild(messageElement);
-            loadTweetScript(messageElement);
             renderedMessageIdsInViewer.add(message.id);
             consoleLog(`[appendNewMessagesToViewer] Appended message ${message.id}.`);
         }
@@ -5033,61 +4923,6 @@ function setupOptionsWindow() {
     // Anchor Highlight Colors
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Background:", storageKey: 'anchorHighlightBgColor', cssVariable: '--otk-anchor-highlight-bg-color', defaultValue: '#4a4a3a', inputType: 'color', idSuffix: 'anchor-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Border:", storageKey: 'anchorHighlightBorderColor', cssVariable: '--otk-anchor-highlight-border-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'anchor-border' }));
-
-    const tweetEmbedDropdownGroup = document.createElement('div');
-    tweetEmbedDropdownGroup.style.cssText = `
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        margin-bottom: 5px;
-    `;
-    const tweetEmbedDropdownLabel = document.createElement('label');
-    tweetEmbedDropdownLabel.textContent = "Tweet Embeds:";
-    tweetEmbedDropdownLabel.htmlFor = 'otk-tweet-embed-dropdown';
-    tweetEmbedDropdownLabel.style.cssText = `
-        font-size: 12px;
-        text-align: left;
-        flex-basis: 230px;
-        flex-shrink: 0;
-    `;
-    const tweetEmbedControlsWrapper = document.createElement('div');
-    tweetEmbedControlsWrapper.style.cssText = `
-        display: flex;
-        flex-grow: 1;
-        align-items: center;
-    `;
-    const tweetEmbedDropdown = document.createElement('select');
-    tweetEmbedDropdown.id = 'otk-tweet-embed-dropdown';
-    tweetEmbedDropdown.style.cssText = `
-        flex-grow: 1;
-        height: 25px;
-        box-sizing: border-box;
-        font-size: 12px;
-        text-align: center;
-        text-align-last: center;
-    `;
-    const tweetEmbedOptions = [
-        { label: 'Disabled', value: 'disabled' },
-        { label: 'Default', value: 'default' },
-        { label: 'Dark Mode', value: 'dark' }
-    ];
-    tweetEmbedOptions.forEach(opt => {
-        const optionElement = document.createElement('option');
-        optionElement.value = opt.value;
-        optionElement.textContent = opt.label;
-        tweetEmbedDropdown.appendChild(optionElement);
-    });
-    tweetEmbedDropdown.value = localStorage.getItem('otkTweetEmbedTheme') || 'default';
-    tweetEmbedDropdown.addEventListener('change', () => {
-        localStorage.setItem('otkTweetEmbedTheme', tweetEmbedDropdown.value);
-        consoleLog(`Tweet embed theme changed to: ${tweetEmbedDropdown.value}`);
-        forceViewerRerenderAfterThemeChange();
-    });
-    tweetEmbedDropdownGroup.appendChild(tweetEmbedDropdownLabel);
-    tweetEmbedControlsWrapper.appendChild(tweetEmbedDropdown);
-    tweetEmbedDropdownGroup.appendChild(tweetEmbedControlsWrapper);
-    themeOptionsContainer.appendChild(tweetEmbedDropdownGroup);
 
     // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
