@@ -4,7 +4,7 @@
 // @version      2.7
 // @description  Tracks OTK threads on /b/, stores messages and media, shows top bar with colors and controls, removes inactive threads entirely
 // @match        https://boards.4chan.org/b/
-// @grant        none
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
@@ -26,9 +26,12 @@
     const SEEN_EMBED_URL_IDS_KEY = 'otkSeenEmbedUrlIds'; // For tracking unique text embeds for stats
     const OTK_TRACKED_KEYWORDS_KEY = 'otkTrackedKeywords'; // For user-defined keywords
     const OTK_BG_UPDATE_FREQ_SECONDS_KEY = 'otkBgUpdateFrequencySeconds'; // For background update frequency
+    const TWEET_EMBED_MODE_KEY = 'otkTweetEmbedMode'; // For tweet embed theme
+    const TWEET_CACHE_KEY = 'otkTweetCache'; // For caching tweet HTML
 
     // --- Global variables ---
     let otkViewer = null;
+    let tweetCache = JSON.parse(localStorage.getItem(TWEET_CACHE_KEY)) || {};
     let viewerActiveImageCount = null; // For viewer-specific unique image count
     let viewerActiveVideoCount = null; // For viewer-specific unique video count
     let backgroundRefreshIntervalId = null;
@@ -166,6 +169,14 @@
         if (overlay) {
             overlay.style.display = 'none';
             consoleLog("Loading screen hidden.");
+
+            // As a final failsafe for the stuck button issue, find the refresh button and ensure its state is visually correct.
+            const btnRefresh = document.getElementById('otk-refresh-data-btn');
+            if (btnRefresh && !btnRefresh.disabled) {
+                btnRefresh.classList.remove('otk-button--active');
+                // Re-apply the base background color directly to override any lingering :active styles.
+                btnRefresh.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-button-bg-color').trim();
+            }
         } else {
             consoleWarn("Loading screen overlay not found when trying to hide.");
         }
@@ -263,11 +274,23 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
         consoleWarn("[LazyLoad] mediaIntersectionObserver not ready. Iframe will load immediately:", iframe.dataset.src);
         iframe.src = iframe.dataset.src;
     }
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
     return wrapper;
 }
 
 // Helper function for processing text segments (either append as text or handle as quote)
-function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises) {
+function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, parentMessageId) {
     // Note: mediaLoadPromises is passed down in case quote recursion generates media elements that need tracking.
     // However, createMessageElementDOM for quotes currently passes an empty array for it. This could be enhanced.
     const quoteMatch = segment.match(quoteRegex);
@@ -306,7 +329,8 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
                 quotedMessageObject.board || boardForLink,
                 false, // isTopLevelMessage = false for quotes
                 currentDepth + 1,
-                null // threadColor is not used for quoted message accents
+                null, // threadColor is not used for quoted message accents
+                parentMessageId // Pass the PARENT message's ID for the quote
             );
             if (quotedElement) {
                 textElement.appendChild(quotedElement);
@@ -323,7 +347,7 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         if (restOfSegment.length > 0) {
             // Recursively process the rest of the segment for more quotes or text
             // This is important if a line is like ">>123 >>456 text"
-            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, parentMessageId);
         }
     } else {
         // Not a quote at the start of the segment (or not a quote at all), just plain text for this segment
@@ -387,12 +411,6 @@ function createTwitchEmbedElement(type, id, timestampStr) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
 }
 
@@ -427,13 +445,82 @@ function createStreamableEmbedElement(videoId) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
+}
+
+function createTweetEmbedElement(tweetId, textElement) {
+    const embedMode = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
+    if (embedMode === 'disabled') {
+        return; // Return nothing if disabled
+    }
+
+    const cacheKey = `${tweetId}-${embedMode}`;
+    const embedContainer = document.createElement('div');
+    embedContainer.style.display = 'inline-block'; // Basic styling for the container
+
+    const renderTweet = (container, html) => {
+        container.innerHTML = html;
+        // Use Twitter's recommended method for dynamically loading widgets
+        if (window.twttr && window.twttr.widgets && typeof window.twttr.widgets.load === 'function') {
+            window.twttr.widgets.load(container);
+        } else {
+            // If the script isn't ready, queue the call.
+            window.twttr = window.twttr || {};
+            window.twttr._e = window.twttr._e || [];
+            window.twttr._e.push(() => {
+                window.twttr.widgets.load(container);
+            });
+
+            // And ensure the script is being loaded if it's not on the page at all.
+            if (!document.getElementById('twitter-wjs')) {
+                const script = document.createElement('script');
+                script.id = 'twitter-wjs';
+                script.src = 'https://platform.twitter.com/widgets.js';
+                script.async = true;
+                document.head.appendChild(script);
+            }
+        }
+    };
+
+
+    if (tweetCache[cacheKey]) {
+        renderTweet(embedContainer, tweetCache[cacheKey]);
+        return embedContainer;
+    }
+
+    // Add omit_script=true to prevent race conditions
+    const embedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/any/status/${tweetId}&theme=${embedMode === 'dark' ? 'dark' : 'light'}&omit_script=true`;
+
+    GM_xmlhttpRequest({
+        method: "GET",
+        url: embedUrl,
+        onload: function(response) {
+            if (response.status >= 200 && response.status < 300) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    const tweetHtml = data.html;
+                    if (tweetHtml) {
+                        // Cache the raw HTML
+                        tweetCache[cacheKey] = tweetHtml;
+                        localStorage.setItem(TWEET_CACHE_KEY, JSON.stringify(tweetCache));
+                        renderTweet(embedContainer, tweetHtml);
+                    }
+                } catch (e) {
+                    consoleError(`Error parsing tweet embed response for ID ${tweetId}:`, e);
+                    embedContainer.textContent = `[Error loading tweet ${tweetId}]`;
+                }
+            } else {
+                consoleError(`Failed to fetch tweet embed for ID ${tweetId}. Status: ${response.status}`);
+                embedContainer.textContent = `[Failed to load tweet ${tweetId}]`;
+            }
+        },
+        onerror: function(response) {
+            consoleError(`Error fetching tweet embed for ID ${tweetId}:`, response);
+            embedContainer.textContent = `[Error fetching tweet ${tweetId}]`;
+        }
+    });
+
+    return embedContainer; // Return the container immediately
 }
 
 
@@ -1366,34 +1453,11 @@ function createStreamableEmbedElement(videoId) {
         // (This will be a separate change if current diff doesn't cover that move) - *Actually, previous diff added it inside main, let's adjust that assumption.*
         // For now, let's assume it's available. If ReferenceError, we'll move it.
 
-        const observerOptions = {
-            root: messagesContainer, // THIS IS THE KEY: root is the scrollable container
+        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, {
+            root: messagesContainer,
             rootMargin: '0px 0px 300px 0px',
             threshold: 0.01
-        };
-
-        // Re-using the handleIntersection from main's scope (or it needs to be global)
-        // If handleIntersection is defined inside main, it won't be accessible here directly unless passed or global.
-        // Let's assume for now it WILL be made accessible (e.g. defined at IIFE scope).
-        // The previous diff put handleIntersection in main, so this will cause an error.
-        // I will need to adjust the location of handleIntersection definition.
-        // For this step, I will proceed assuming it's accessible.
-        // The actual creation:
-        // mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        // consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
-        // This needs `handleIntersection` to be in scope. The previous diff added it inside `main`.
-        // I will adjust the previous diff in my mind and assume `handleIntersection` is now at the IIFE's top level scope.
-        // So, the following line should work under that assumption:
-
-        // Re-evaluating: The `handleIntersection` function was defined inside `main`.
-        // It's better to define it at a higher scope if it's to be used by `renderMessagesInViewer`
-        // and potentially other functions. Let's define it at the IIFE scope.
-        // This means I need a step to move `handleIntersection` first.
-        // For now, I'll put a placeholder here and then make a specific change for `handleIntersection`.
-
-        // Now that handleIntersection is at IIFE scope, this should work:
-        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
+        });
         messagesContainer.style.cssText = `
             position: absolute;
             top: 0;
@@ -1405,14 +1469,14 @@ function createStreamableEmbedElement(videoId) {
             box-sizing: border-box;
             /* width and height are now controlled by absolute positioning */
         `;
-        // Note: otk-messages-container now fills otk-viewer and handles all padding and scrolling.
-        // otkViewer has 10px top/bottom padding, so messagesContainer effectively has that spacing.
+        otkViewer.appendChild(messagesContainer);
 
         const totalMessagesToRender = allMessages.length;
         let messagesProcessedInViewer = 0;
         let imagesFoundInViewer = 0;
         let videosFoundInViewer = 0;
         const mediaLoadPromises = [];
+        const embedWrappers = [];
         const updateInterval = Math.max(1, Math.floor(totalMessagesToRender / 20)); // Update progress roughly 20 times or every message
 
         for (let i = 0; i < totalMessagesToRender; i++) {
@@ -1422,8 +1486,12 @@ function createStreamableEmbedElement(videoId) {
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId);
 
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
-            messagesContainer.appendChild(messageElement);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor, null); // Top-level messages have no parent
+            if (messageElement) {
+                messagesContainer.appendChild(messageElement);
+                const wrappers = messageElement.querySelectorAll('.otk-youtube-embed-wrapper, .otk-twitch-embed-wrapper, .otk-streamable-embed-wrapper, .twitter-tweet');
+                wrappers.forEach(wrapper => embedWrappers.push(wrapper));
+            }
 
             messagesProcessedInViewer++;
 
@@ -1452,6 +1520,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 // updateDisplayedStatistics(); // Refresh stats display -- MOVED TO AFTER PROMISES
 
         Promise.all(mediaLoadPromises).then(() => {
+            embedWrappers.forEach(wrapper => mediaIntersectionObserver.observe(wrapper));
             consoleLog("All inline media load attempts complete.");
             updateLoadingProgress(95, "Finalizing view...");
     viewerActiveImageCount = uniqueImageViewerHashes.size;
@@ -1460,19 +1529,16 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
     updateDisplayedStatistics(); // Update stats after all media processing is attempted.
 
             let anchorScrolled = false;
-            const storedAnchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY); // This now stores message.id
+            const storedAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
 
-            if (storedAnchoredMessageId) {
-                // Find the element by its data-original-message-id attribute
-                const anchoredElement = messagesContainer.querySelector(`[data-original-message-id="${storedAnchoredMessageId}"]`);
+            if (storedAnchoredInstanceId) {
+                const anchoredElement = document.getElementById(storedAnchoredInstanceId);
 
-                if (anchoredElement) {
+                if (anchoredElement && messagesContainer.contains(anchoredElement)) {
                     try {
-                        // The element is already confirmed to be within messagesContainer by the querySelector
                         anchoredElement.scrollIntoView({ behavior: 'auto', block: 'center' });
                         anchorScrolled = true;
-                        consoleLog(`Scrolled to anchored message ID: ${storedAnchoredMessageId} (Element ID: ${anchoredElement.id})`);
-                        // Ensure the class is applied, though createMessageElementDOM should have handled it
+                        consoleLog(`Scrolled to anchored message instance: ${storedAnchoredInstanceId}`);
                         if (!anchoredElement.classList.contains(ANCHORED_MESSAGE_CLASS)) {
                             anchoredElement.classList.add(ANCHORED_MESSAGE_CLASS);
                         }
@@ -1480,7 +1546,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                         consoleError("Error scrolling to anchored message:", e);
                     }
                 } else {
-                    consoleWarn(`Anchored message ID ${storedAnchoredMessageId} not found in rendered messages. Clearing anchor.`);
+                    consoleWarn(`Anchored message instance ${storedAnchoredInstanceId} not found. Clearing anchor.`);
                     localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
                 }
             }
@@ -1693,10 +1759,10 @@ function _populateAttachmentDivWithMedia(
     }
 }
 
-    // Signature includes isTopLevelMessage, currentDepth, and threadColor
-    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
+    // Signature now includes parentMessageId
+    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId = null) {
         const layoutStyle = localStorage.getItem('otkMessageLayoutStyle') || 'default';
-        consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}, layoutStyle: ${layoutStyle}`);
+        consoleLog(`[DepthCheck] Rendering message: ${message.id}, parent: ${parentMessageId}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}, layoutStyle: ${layoutStyle}`);
 
         const allThemeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
         let depthKeyPart;
@@ -1752,6 +1818,9 @@ function _populateAttachmentDivWithMedia(
         ];
         const inlineStreamablePatterns = [
             { type: 'video', regex: /(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+        ];
+        const twitterPatterns = [
+            { regex: /^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/\w+\/status\/(\d+)/, idGroup: 1 }
         ];
         // --- End of media pattern definitions ---
 
@@ -1929,6 +1998,23 @@ function _populateAttachmentDivWithMedia(
                         }
                     }
                     // Similar checks for Twitch and Streamable sole URLs... (omitted for brevity, but structure is the same)
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     if (!soleUrlEmbedMade) {
                         let currentTextSegment = line;
@@ -2123,22 +2209,23 @@ function _populateAttachmentDivWithMedia(
                 textWrapperDiv.appendChild(attachmentDiv);
             }
 
-            // Click listener for anchoring (needs to be robust for new structure)
-            const uniqueInstanceId = `otk-instance-${message.id}-${currentDepth}-${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
-            messageDiv.id = uniqueInstanceId;
+            // Click listener for anchoring
+            const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
+            messageDiv.id = persistentInstanceId;
             messageDiv.setAttribute('data-original-message-id', message.id);
+
             messageDiv.addEventListener('click', (event) => {
                 const target = event.target;
                 let preventAnchor = false;
 
-                // Standard interactive elements
+                // Standard interactive elements that should not trigger anchoring
                 if (target.matches('a, img, video, iframe, input, button, select, textarea') ||
                     target.closest('a, img, video, iframe, input, button, select, textarea') ||
                     target.isContentEditable) {
                     preventAnchor = true;
                 }
 
-                // Specific wrapper classes for embeds or special links
+                // Specific wrapper classes for embeds that should not trigger anchoring
                 if (!preventAnchor) {
                     const specificWrappers = [
                         '.thumbnail-link',
@@ -2146,11 +2233,8 @@ function _populateAttachmentDivWithMedia(
                         '.otk-twitch-embed-wrapper',
                         '.otk-streamable-embed-wrapper'
                     ];
-                    for (const wrapperClass of specificWrappers) {
-                        if (target.matches(wrapperClass) || target.closest(wrapperClass)) {
-                            preventAnchor = true;
-                            break;
-                        }
+                    if (specificWrappers.some(cls => target.matches(cls) || target.closest(cls))) {
+                        preventAnchor = true;
                     }
                 }
 
@@ -2162,28 +2246,28 @@ function _populateAttachmentDivWithMedia(
                     event.stopPropagation();
                 }
 
-                const storedAnchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+                const isThisMessageAlreadyAnchored = messageDiv.classList.contains(ANCHORED_MESSAGE_CLASS);
 
-                if (message.id.toString() === storedAnchoredMessageId) {
-                    // Clicking the already anchored message: un-anchor it
-                    messageDiv.classList.remove(ANCHORED_MESSAGE_CLASS);
+                // Un-highlight all currently anchored messages
+                document.querySelectorAll(`.${ANCHORED_MESSAGE_CLASS}`).forEach(el => {
+                    el.classList.remove(ANCHORED_MESSAGE_CLASS);
+                });
+
+                if (isThisMessageAlreadyAnchored) {
+                    // If the clicked message was the anchor, un-anchor it
                     localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
-                    consoleLog(`Un-anchored message ID: ${message.id} (Instance: ${uniqueInstanceId})`);
+                    consoleLog(`Un-anchored message instance: ${persistentInstanceId}`);
                 } else {
-                    // Clicking a new message or a different message: anchor it
-                    const oldAnchorElement = document.querySelector(`.${ANCHORED_MESSAGE_CLASS}`);
-                    if (oldAnchorElement) {
-                        oldAnchorElement.classList.remove(ANCHORED_MESSAGE_CLASS);
-                    }
+                    // Otherwise, anchor this new message
                     messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
-                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, message.id.toString());
-                    consoleLog(`Anchored message ID: ${message.id} (Instance: ${uniqueInstanceId})`);
+                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, persistentInstanceId);
+                    consoleLog(`Anchored new message instance: ${persistentInstanceId}`);
                 }
             });
 
             // Initial highlight check
-            const initiallyStoredAnchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-            if (message.id.toString() === initiallyStoredAnchoredMessageId) {
+            const initiallyStoredAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
 
@@ -2431,6 +2515,23 @@ function _populateAttachmentDivWithMedia(
 
                     // Check for Sole Streamable URL
                     if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!soleUrlEmbedMade) {
                         for (const patternObj of streamablePatterns) {
                             const match = trimmedLine.match(patternObj.regex);
                             if (match) {
@@ -2505,7 +2606,7 @@ function _populateAttachmentDivWithMedia(
                                 processedAsEmbed = true;
 
                                 if (earliestMatch.index > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
 
                                 const matchedUrl = earliestMatch[0];
@@ -2558,7 +2659,7 @@ function _populateAttachmentDivWithMedia(
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                             } else {
                                 if (currentTextSegment.length > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
                                 currentTextSegment = "";
                             }
@@ -2579,25 +2680,23 @@ function _populateAttachmentDivWithMedia(
 
             messageDiv.appendChild(textElement);
 
-            // Generate a unique instance ID for this specific DOM element
-            // This ID will be used for anchoring and precise scrolling.
-            const uniqueInstanceId = `otk-instance-${message.id}-${currentDepth}-${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
-            messageDiv.id = uniqueInstanceId;
-            messageDiv.setAttribute('data-original-message-id', message.id); // Keep original ID for reference if needed
+            // Click listener for anchoring
+            const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
+            messageDiv.id = persistentInstanceId;
+            messageDiv.setAttribute('data-original-message-id', message.id);
 
-            // Add click listener to the messageDiv for anchoring
             messageDiv.addEventListener('click', (event) => {
                 const target = event.target;
                 let preventAnchor = false;
 
-                // Standard interactive elements
+                // Standard interactive elements that should not trigger anchoring
                 if (target.matches('a, img, video, iframe, input, button, select, textarea') ||
                     target.closest('a, img, video, iframe, input, button, select, textarea') ||
                     target.isContentEditable) {
                     preventAnchor = true;
                 }
 
-                // Specific wrapper classes for embeds or special links
+                // Specific wrapper classes for embeds that should not trigger anchoring
                 if (!preventAnchor) {
                     const specificWrappers = [
                         '.thumbnail-link',
@@ -2605,11 +2704,8 @@ function _populateAttachmentDivWithMedia(
                         '.otk-twitch-embed-wrapper',
                         '.otk-streamable-embed-wrapper'
                     ];
-                    for (const wrapperClass of specificWrappers) {
-                        if (target.matches(wrapperClass) || target.closest(wrapperClass)) {
-                            preventAnchor = true;
-                            break;
-                        }
+                    if (specificWrappers.some(cls => target.matches(cls) || target.closest(cls))) {
+                        preventAnchor = true;
                     }
                 }
 
@@ -2621,28 +2717,28 @@ function _populateAttachmentDivWithMedia(
                     event.stopPropagation();
                 }
 
-                const storedAnchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+                const isThisMessageAlreadyAnchored = messageDiv.classList.contains(ANCHORED_MESSAGE_CLASS);
 
-                if (message.id.toString() === storedAnchoredMessageId) {
-                    // Clicking the already anchored message: un-anchor it
-                    messageDiv.classList.remove(ANCHORED_MESSAGE_CLASS);
+                // Un-highlight all currently anchored messages
+                document.querySelectorAll(`.${ANCHORED_MESSAGE_CLASS}`).forEach(el => {
+                    el.classList.remove(ANCHORED_MESSAGE_CLASS);
+                });
+
+                if (isThisMessageAlreadyAnchored) {
+                    // If the clicked message was the anchor, un-anchor it
                     localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
-                    consoleLog(`Un-anchored message ID: ${message.id} (Instance: ${uniqueInstanceId})`);
+                    consoleLog(`Un-anchored message instance: ${persistentInstanceId}`);
                 } else {
-                    // Clicking a new message or a different message: anchor it
-                    const oldAnchorElement = document.querySelector(`.${ANCHORED_MESSAGE_CLASS}`);
-                    if (oldAnchorElement) {
-                        oldAnchorElement.classList.remove(ANCHORED_MESSAGE_CLASS);
-                    }
+                    // Otherwise, anchor this new message
                     messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
-                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, message.id.toString());
-                    consoleLog(`Anchored message ID: ${message.id} (Instance: ${uniqueInstanceId})`);
+                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, persistentInstanceId);
+                    consoleLog(`Anchored new message instance: ${persistentInstanceId}`);
                 }
             });
 
             // Initial highlight check when the element is first created
-            const initiallyStoredAnchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-            if (message.id.toString() === initiallyStoredAnchoredMessageId) { // Compare message.id with stored ID
+            const initiallyStoredAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
             // The erroneous duplicated block that was here has been removed.
@@ -2723,8 +2819,8 @@ function _populateAttachmentDivWithMedia(
         for (const message of newMessages) {
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId); // Get thread color for accent
-            // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
+            // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0, and parent is null
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor, null);
             messagesContainer.appendChild(messageElement);
             renderedMessageIdsInViewer.add(message.id);
             consoleLog(`[appendNewMessagesToViewer] Appended message ${message.id}.`);
@@ -3700,20 +3796,20 @@ function _populateAttachmentDivWithMedia(
 
         const btnRefresh = createTrackerButton('Refresh Data', 'otk-refresh-data-btn');
         btnRefresh.addEventListener('click', async () => {
+            if (isManualRefreshInProgress) {
+                consoleLog('[GUI] "Refresh Data" button clicked, but a refresh is already in progress. Ignoring.');
+                return; // Ignore click if a refresh is already happening
+            }
             consoleLog('[GUI] "Refresh Data" button clicked.');
-            // sessionStorage.setItem('otkManualRefreshClicked', 'true'); // Not currently used elsewhere
-            btnRefresh.disabled = true;
-            // isManualRefreshInProgress is set within refreshThreadsAndMessages
+            // isManualRefreshInProgress is set to true at the start of refreshThreadsAndMessages
+            // and false in its finally block. This prevents the race condition without disabling the button.
             try {
                 await refreshThreadsAndMessages();
                 consoleLog('[GUI] Data refresh complete.');
             } catch (error) {
                 consoleError('[GUI] Error during data refresh:', error);
-            } finally {
-                // isManualRefreshInProgress is reset within refreshThreadsAndMessages
-                btnRefresh.disabled = false;
-                consoleLog('[GUI] Refresh operation finished.');
             }
+            // No finally block needed here to re-enable the button, as it's never disabled.
         });
         // Appended to bottomRowContainer later
 
@@ -4924,6 +5020,60 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Background:", storageKey: 'anchorHighlightBgColor', cssVariable: '--otk-anchor-highlight-bg-color', defaultValue: '#4a4a3a', inputType: 'color', idSuffix: 'anchor-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Border:", storageKey: 'anchorHighlightBorderColor', cssVariable: '--otk-anchor-highlight-border-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'anchor-border' }));
 
+    const tweetEmbedModeGroup = document.createElement('div');
+    tweetEmbedModeGroup.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-bottom: 5px;
+    `;
+    const tweetEmbedModeLabel = document.createElement('label');
+    tweetEmbedModeLabel.textContent = "Tweet Embeds:";
+    tweetEmbedModeLabel.htmlFor = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeLabel.style.cssText = `
+        font-size: 12px;
+        text-align: left;
+        flex-basis: 230px;
+        flex-shrink: 0;
+    `;
+    const tweetEmbedModeControlsWrapper = document.createElement('div');
+    tweetEmbedModeControlsWrapper.style.cssText = `
+        display: flex;
+        flex-grow: 1;
+        align-items: center;
+    `;
+    const tweetEmbedModeDropdown = document.createElement('select');
+    tweetEmbedModeDropdown.id = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeDropdown.style.cssText = `
+        flex-grow: 1;
+        height: 25px;
+        box-sizing: border-box;
+        font-size: 12px;
+        text-align: center;
+        text-align-last: center;
+    `;
+    const tweetEmbedOptions = [
+        { label: 'Disabled', value: 'disabled' },
+        { label: 'Default', value: 'default' },
+        { label: 'Dark Mode', value: 'dark' }
+    ];
+    tweetEmbedOptions.forEach(opt => {
+        const optionElement = document.createElement('option');
+        optionElement.value = opt.value;
+        optionElement.textContent = opt.label;
+        tweetEmbedModeDropdown.appendChild(optionElement);
+    });
+    tweetEmbedModeDropdown.value = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
+    tweetEmbedModeDropdown.addEventListener('change', () => {
+        localStorage.setItem(TWEET_EMBED_MODE_KEY, tweetEmbedModeDropdown.value);
+        forceViewerRerenderAfterThemeChange();
+    });
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeLabel);
+    tweetEmbedModeControlsWrapper.appendChild(tweetEmbedModeDropdown);
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeControlsWrapper);
+    themeOptionsContainer.appendChild(tweetEmbedModeGroup);
+
     // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
     // --- Messages Section Restructuring ---
@@ -5204,36 +5354,38 @@ function setupOptionsWindow() {
     });
 
     loadThemeButton.addEventListener('click', () => {
-        const selectedThemeNameInDropdown = customThemesDropdown.value;
+        const selectedThemeName = customThemesDropdown.value;
 
-        if (selectedThemeNameInDropdown === "__REVERT__") {
-            alert("Cannot 'load' the active settings. They are already active or have been reverted. Select a custom theme to load.");
+        if (selectedThemeName === "__REVERT__" || !selectedThemeName || (customThemesDropdown.selectedOptions[0] && customThemesDropdown.selectedOptions[0].disabled)) {
+            alert("Please select a valid custom theme to load.");
             return;
         }
 
-        if (!selectedThemeNameInDropdown || customThemesDropdown.selectedOptions.length === 0 || (customThemesDropdown.selectedOptions[0] && customThemesDropdown.selectedOptions[0].disabled)) {
-            alert("Please select a theme from the dropdown to load.");
+        const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+        const themeToLoad = customThemes.find(t => t.name === selectedThemeName);
+
+        if (!themeToLoad) {
+            alert(`Error: Could not find the theme "${selectedThemeName}" to load.`);
             return;
         }
 
-        // At this point, if a theme was being previewed, its settings are already in THEME_SETTINGS_KEY
-        // and applied to the UI via applyThemeSettings() from the dropdown's 'change' listener.
-        // So, the "Load" action is effectively confirming the preview.
-        // We just need to ensure prePreviewSettings is cleared as the preview is now the active setting.
+        consoleLog(`Loading custom theme: "${selectedThemeName}"`);
 
-        // consoleLog(`[LoadThemeDebug] Load button clicked. Theme "${selectedThemeNameInDropdown}" is now permanently active.`); // Removed
-        // THEME_SETTINGS_KEY already has the previewed theme's settings.
-        // applyThemeSettings() was already called when preview started.
+        // 1. Reset all theme settings to their base defaults first.
+        resetAllThemeSettingsToDefault(false); // Pass false to prevent confirmation prompt
 
-        // Standard log for this action:
-        consoleLog(`Theme "${selectedThemeNameInDropdown}" confirmed as active theme.`);
-        prePreviewSettings = null; // Clear pre-preview state as current settings are now committed.
-        currentlyPreviewingThemeName = null; // No longer just previewing.
-        customThemesDropdown.value = "__REVERT__"; // Set dropdown to show "Active Settings" as current state.
+        // 2. Set the new theme's settings into the active settings key.
+        localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(themeToLoad.settings));
 
-        alert(`Theme "${selectedThemeNameInDropdown}" is now the active theme.`);
-        // No, we don't call applyThemeSettings() again unless THEME_SETTINGS_KEY changed, which it hasn't here.
-        // The settings from the preview *are* the new active settings.
+        // 3. Apply the newly loaded settings.
+        applyThemeSettings();
+
+        // 4. Clear any preview-related state.
+        prePreviewSettings = null;
+        currentlyPreviewingThemeName = null;
+        customThemesDropdown.value = "__REVERT__"; // Set dropdown to show "Active Settings"
+
+        alert(`Theme "${selectedThemeName}" loaded successfully.`);
     });
 
     deleteThemeButton.addEventListener('click', () => {
@@ -5330,20 +5482,26 @@ function setupOptionsWindow() {
     }
 
 
-    resetAllColorsButton.addEventListener('click', () => {
-        if (!confirm("Are you sure you want to reset all theme settings to their defaults?")) {
+    function resetAllThemeSettingsToDefault(promptUser = true) {
+        if (promptUser && !confirm("Are you sure you want to reset all theme settings to their defaults?")) {
             return;
         }
+
         consoleLog("Resetting all theme settings to default...");
+        // Clear the active theme settings from localStorage.
+        localStorage.removeItem(THEME_SETTINGS_KEY);
+
         const allOptionConfigs = getAllOptionConfigs();
 
         allOptionConfigs.forEach(opt => {
+            // Remove the inline style to revert to the stylesheet's default.
             document.documentElement.style.removeProperty(opt.cssVariable);
-            saveThemeSetting(opt.storageKey, null);
 
+            // Update the input fields in the options panel to reflect the default values.
             const mainInput = document.getElementById(`otk-${opt.idSuffix}`);
             const hexInput = opt.inputType === 'color' ? document.getElementById(`otk-${opt.idSuffix}-hex`) : null;
 
+            // Get the default value from the stylesheet or the config's fallback.
             let cssDefaultValue = getComputedStyle(document.documentElement).getPropertyValue(opt.cssVariable)?.trim() || opt.defaultValue;
             if (opt.unit && cssDefaultValue.endsWith(opt.unit)) {
                 cssDefaultValue = cssDefaultValue.replace(opt.unit, '');
@@ -5354,25 +5512,37 @@ function setupOptionsWindow() {
 
             if (opt.storageKey === 'cogIconColor') {
                 const cogIcon = document.getElementById('otk-settings-cog');
-                if(cogIcon) cogIcon.style.color = '';
+                if (cogIcon) cogIcon.style.color = ''; // Revert to stylesheet
             }
         });
 
-        // Also reset new boolean settings to their defaults by removing them (or setting to default boolean)
-        const newBooleanSettingsKeys = [
-            'otkMsgDepth0DisableHeaderUnderline', 'otkMsgDepth0DisplayMediaFilename',
-            'otkMsgDepth1DisableHeaderUnderline', 'otkMsgDepth1DisplayMediaFilename',
-            'otkMsgDepth2plusDisableHeaderUnderline', 'otkMsgDepth2plusDisplayMediaFilename'
+        // Also reset new boolean settings to their defaults
+        const newBooleanSettings = [
+            { key: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' },
+            { key: 'otkMsgDepth0DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth0-display-media-filename' },
+            { key: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' },
+            { key: 'otkMsgDepth1DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth1-display-media-filename' },
+            { key: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' },
+            { key: 'otkMsgDepth2plusDisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth2plus-display-media-filename' }
         ];
-        newBooleanSettingsKeys.forEach(key => {
-            saveThemeSetting(key, null); // This will remove the key, allowing defaults to apply
-            // Alternatively, to explicitly set defaults:
-            // if (key.includes('DisableHeaderUnderline')) saveThemeSetting(key, false);
-            // if (key.includes('DisplayMediaFilename')) saveThemeSetting(key, true);
+        newBooleanSettings.forEach(opt => {
+            const checkbox = document.getElementById(`otk-${opt.idSuffix}-checkbox`);
+            if (checkbox) {
+                checkbox.checked = opt.defaultValue;
+            }
         });
 
-        applyThemeSettings(); // Call to refresh all inputs based on new defaults (including new checkboxes)
-        alert("All theme settings have been reset to their defaults.");
+        // The applyThemeSettings() call is no longer needed here if called by the initiator.
+        // If called from the reset button, it should call it.
+        // Let's call it for the standalone reset case.
+        if (promptUser) {
+            applyThemeSettings();
+            alert("All theme settings have been reset to their defaults.");
+        }
+    }
+
+    resetAllColorsButton.addEventListener('click', () => {
+        resetAllThemeSettingsToDefault(true); // true to prompt user
     });
 
     // Event Listeners for cog and close
