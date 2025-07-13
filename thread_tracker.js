@@ -274,18 +274,6 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
         consoleWarn("[LazyLoad] mediaIntersectionObserver not ready. Iframe will load immediately:", iframe.dataset.src);
         iframe.src = iframe.dataset.src;
     }
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
 }
 
@@ -448,79 +436,84 @@ function createStreamableEmbedElement(videoId) {
     return wrapper;
 }
 
-function createTweetEmbedElement(tweetId, textElement) {
+function createTweetEmbedElement(tweetId) { // No longer takes mediaLoadPromises
     const embedMode = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
     if (embedMode === 'disabled') {
-        return; // Return nothing if disabled
+        const disabledSpan = document.createElement('span');
+        disabledSpan.style.display = 'none';
+        return disabledSpan;
     }
 
     const cacheKey = `${tweetId}-${embedMode}`;
     const embedContainer = document.createElement('div');
-    embedContainer.style.display = 'inline-block'; // Basic styling for the container
+    embedContainer.style.display = 'inline-block'; // Or 'block' if it should take full width
+    embedContainer.dataset.tweetId = tweetId;
+    embedContainer.dataset.cacheKey = cacheKey;
+    embedContainer.style.minHeight = '100px'; // Placeholder height
 
-    const renderTweet = (container, html) => {
-        container.innerHTML = html;
-        // Use Twitter's recommended method for dynamically loading widgets
-        if (window.twttr && window.twttr.widgets && typeof window.twttr.widgets.load === 'function') {
-            window.twttr.widgets.load(container);
-        } else {
-            // If the script isn't ready, queue the call.
-            window.twttr = window.twttr || {};
-            window.twttr._e = window.twttr._e || [];
-            window.twttr._e.push(() => {
-                window.twttr.widgets.load(container);
-            });
-
-            // And ensure the script is being loaded if it's not on the page at all.
-            if (!document.getElementById('twitter-wjs')) {
-                const script = document.createElement('script');
-                script.id = 'twitter-wjs';
-                script.src = 'https://platform.twitter.com/widgets.js';
-                script.async = true;
-                document.head.appendChild(script);
+    const processTweet = () => {
+        // Check cache first
+        if (tweetCache[cacheKey] && typeof tweetCache[cacheKey] === 'string') {
+            embedContainer.innerHTML = tweetCache[cacheKey];
+            if (window.twttr && window.twttr.widgets) {
+                window.twttr.widgets.load(embedContainer);
             }
+            return;
         }
+
+        // Not in cache, fetch it
+        const embedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/any/status/${tweetId}&theme=${embedMode === 'dark' ? 'dark' : 'light'}&omit_script=true`;
+
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: embedUrl,
+            onload: function(response) {
+                if (response.status >= 200 && response.status < 300) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        if (data.html) {
+                            tweetCache[cacheKey] = data.html; // Cache the raw HTML
+                            localStorage.setItem(TWEET_CACHE_KEY, JSON.stringify(tweetCache)); // Persist cache
+                            embedContainer.innerHTML = data.html;
+                            if (window.twttr && window.twttr.widgets) {
+                                window.twttr.widgets.load(embedContainer);
+                            }
+                        } else {
+                            embedContainer.textContent = `[Tweet ${tweetId} not found or oEmbed failed]`;
+                        }
+                    } catch (e) {
+                        consoleError("Error parsing tweet oEmbed response:", e);
+                        embedContainer.textContent = `[Error parsing tweet ${tweetId}]`;
+                    }
+                } else {
+                    consoleError(`Failed to fetch tweet embed for ${tweetId}. Status: ${response.status}`);
+                    embedContainer.textContent = `[Failed to load tweet ${tweetId}]`;
+                }
+            },
+            onerror: function(response) {
+                consoleError("Error with GM_xmlhttpRequest for tweet embed:", response);
+                embedContainer.textContent = `[Network error loading tweet ${tweetId}]`;
+            }
+        });
     };
 
-
-    if (tweetCache[cacheKey]) {
-        renderTweet(embedContainer, tweetCache[cacheKey]);
-        return embedContainer;
+    // Ensure Twitter's widgets.js is loaded
+    if (window.twttr && window.twttr.widgets) {
+        processTweet();
+    } else {
+        window.twttr = window.twttr || { _e: [] };
+        window.twttr._e.push(processTweet); // Queue the tweet processing
+        if (!document.getElementById('twitter-wjs')) {
+            const script = document.createElement('script');
+            script.id = 'twitter-wjs';
+            script.src = 'https://platform.twitter.com/widgets.js';
+            script.async = true;
+            script.charset = 'utf-8';
+            document.head.appendChild(script);
+        }
     }
 
-    // Add omit_script=true to prevent race conditions
-    const embedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/any/status/${tweetId}&theme=${embedMode === 'dark' ? 'dark' : 'light'}&omit_script=true`;
-
-    GM_xmlhttpRequest({
-        method: "GET",
-        url: embedUrl,
-        onload: function(response) {
-            if (response.status >= 200 && response.status < 300) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    const tweetHtml = data.html;
-                    if (tweetHtml) {
-                        // Cache the raw HTML
-                        tweetCache[cacheKey] = tweetHtml;
-                        localStorage.setItem(TWEET_CACHE_KEY, JSON.stringify(tweetCache));
-                        renderTweet(embedContainer, tweetHtml);
-                    }
-                } catch (e) {
-                    consoleError(`Error parsing tweet embed response for ID ${tweetId}:`, e);
-                    embedContainer.textContent = `[Error loading tweet ${tweetId}]`;
-                }
-            } else {
-                consoleError(`Failed to fetch tweet embed for ID ${tweetId}. Status: ${response.status}`);
-                embedContainer.textContent = `[Failed to load tweet ${tweetId}]`;
-            }
-        },
-        onerror: function(response) {
-            consoleError(`Error fetching tweet embed for ID ${tweetId}:`, response);
-            embedContainer.textContent = `[Error fetching tweet ${tweetId}]`;
-        }
-    });
-
-    return embedContainer; // Return the container immediately
+    return embedContainer;
 }
 
 
@@ -2004,7 +1997,7 @@ function _populateAttachmentDivWithMedia(
                             if (match) {
                                 const tweetId = match[patternObj.idGroup];
                                 if (tweetId) {
-                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    const tweetEmbed = createTweetEmbedElement(tweetId);
                                     if (tweetEmbed) {
                                         textElement.appendChild(tweetEmbed);
                                     }
@@ -2606,7 +2599,7 @@ function _populateAttachmentDivWithMedia(
                                 processedAsEmbed = true;
 
                                 if (earliestMatch.index > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, message.id);
                                 }
 
                                 const matchedUrl = earliestMatch[0];
@@ -2659,7 +2652,7 @@ function _populateAttachmentDivWithMedia(
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                             } else {
                                 if (currentTextSegment.length > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, message.id);
                                 }
                                 currentTextSegment = "";
                             }
@@ -5216,48 +5209,16 @@ function setupOptionsWindow() {
         const themeName = newThemeNameInput.value.trim();
         if (!themeName) {
             alert("Please enter a name for the theme.");
-            newThemeNameInput.focus();
             return;
         }
 
-        const currentActiveSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
-        if (Object.keys(currentActiveSettings).length === 0) {
-            // If no settings are explicitly saved, gather them from current computed/default values
-            // This ensures a full theme object is saved.
-             const allConfigs = getAllOptionConfigs(); // Helper to get all theme configs
-             allConfigs.forEach(config => {
-                if (!currentActiveSettings[config.storageKey]) { // Only if not already set
-                    let value = getComputedStyle(document.documentElement).getPropertyValue(config.cssVariable)?.trim();
-                    if (!value && config.defaultValue) value = config.defaultValue; // Fallback to defined default
-                    if (value) currentActiveSettings[config.storageKey] = value;
-                }
-             });
-        }
+        const currentSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+        let allCustomThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || {};
+        allCustomThemes[themeName] = currentSettings;
+        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(allCustomThemes));
 
-        // consoleLog('[Debug Save Theme] Final currentActiveSettings object that will be saved for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings))); // Retained original, more concise log
-        // The more verbose [SaveThemeDebug] logs are removed by this diff.
-        // The check for specific border colors can also be removed if not essential for general operation.
-        // For now, let's keep the original single debug line for the final object.
-        consoleLog('[Debug Save Theme] Final currentActiveSettings for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings)));
-
-        let customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
-        const existingThemeIndex = customThemes.findIndex(t => t.name === themeName);
-
-        if (existingThemeIndex > -1) {
-            if (!confirm(`A theme named "${themeName}" already exists. Overwrite it?`)) {
-                return;
-            }
-            customThemes[existingThemeIndex].settings = currentActiveSettings;
-            consoleLog(`Custom theme "${themeName}" overwritten.`);
-        } else {
-            customThemes.push({ name: themeName, settings: currentActiveSettings });
-            consoleLog(`Custom theme "${themeName}" saved.`);
-        }
-
-        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(customThemes));
-        newThemeNameInput.value = ''; // Clear input
-        populateCustomThemesDropdown(); // To be created in next step
-        alert(`Theme "${themeName}" saved successfully!`);
+        alert(`Theme "${themeName}" saved!`);
+        populateCustomThemesDropdown();
     });
 
     function populateCustomThemesDropdown() {
