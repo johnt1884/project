@@ -4,7 +4,7 @@
 // @version      2.7
 // @description  Tracks OTK threads on /b/, stores messages and media, shows top bar with colors and controls, removes inactive threads entirely
 // @match        https://boards.4chan.org/b/
-// @grant        none
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
@@ -26,9 +26,12 @@
     const SEEN_EMBED_URL_IDS_KEY = 'otkSeenEmbedUrlIds'; // For tracking unique text embeds for stats
     const OTK_TRACKED_KEYWORDS_KEY = 'otkTrackedKeywords'; // For user-defined keywords
     const OTK_BG_UPDATE_FREQ_SECONDS_KEY = 'otkBgUpdateFrequencySeconds'; // For background update frequency
+    const TWEET_EMBED_MODE_KEY = 'otkTweetEmbedMode'; // For tweet embed theme
+    const TWEET_CACHE_KEY = 'otkTweetCache'; // For caching tweet HTML
 
     // --- Global variables ---
     let otkViewer = null;
+    let tweetCache = JSON.parse(localStorage.getItem(TWEET_CACHE_KEY)) || {};
     let viewerActiveImageCount = null; // For viewer-specific unique image count
     let viewerActiveVideoCount = null; // For viewer-specific unique video count
     let backgroundRefreshIntervalId = null;
@@ -271,6 +274,18 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
         consoleWarn("[LazyLoad] mediaIntersectionObserver not ready. Iframe will load immediately:", iframe.dataset.src);
         iframe.src = iframe.dataset.src;
     }
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
     return wrapper;
 }
 
@@ -396,12 +411,6 @@ function createTwitchEmbedElement(type, id, timestampStr) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
 }
 
@@ -436,13 +445,82 @@ function createStreamableEmbedElement(videoId) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
+}
+
+function createTweetEmbedElement(tweetId, textElement) {
+    const embedMode = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
+    if (embedMode === 'disabled') {
+        return; // Return nothing if disabled
+    }
+
+    const cacheKey = `${tweetId}-${embedMode}`;
+    const embedContainer = document.createElement('div');
+    embedContainer.style.display = 'inline-block'; // Basic styling for the container
+
+    const renderTweet = (container, html) => {
+        container.innerHTML = html;
+        // Use Twitter's recommended method for dynamically loading widgets
+        if (window.twttr && window.twttr.widgets && typeof window.twttr.widgets.load === 'function') {
+            window.twttr.widgets.load(container);
+        } else {
+            // If the script isn't ready, queue the call.
+            window.twttr = window.twttr || {};
+            window.twttr._e = window.twttr._e || [];
+            window.twttr._e.push(() => {
+                window.twttr.widgets.load(container);
+            });
+
+            // And ensure the script is being loaded if it's not on the page at all.
+            if (!document.getElementById('twitter-wjs')) {
+                const script = document.createElement('script');
+                script.id = 'twitter-wjs';
+                script.src = 'https://platform.twitter.com/widgets.js';
+                script.async = true;
+                document.head.appendChild(script);
+            }
+        }
+    };
+
+
+    if (tweetCache[cacheKey]) {
+        renderTweet(embedContainer, tweetCache[cacheKey]);
+        return embedContainer;
+    }
+
+    // Add omit_script=true to prevent race conditions
+    const embedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/any/status/${tweetId}&theme=${embedMode === 'dark' ? 'dark' : 'light'}&omit_script=true`;
+
+    GM_xmlhttpRequest({
+        method: "GET",
+        url: embedUrl,
+        onload: function(response) {
+            if (response.status >= 200 && response.status < 300) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    const tweetHtml = data.html;
+                    if (tweetHtml) {
+                        // Cache the raw HTML
+                        tweetCache[cacheKey] = tweetHtml;
+                        localStorage.setItem(TWEET_CACHE_KEY, JSON.stringify(tweetCache));
+                        renderTweet(embedContainer, tweetHtml);
+                    }
+                } catch (e) {
+                    consoleError(`Error parsing tweet embed response for ID ${tweetId}:`, e);
+                    embedContainer.textContent = `[Error loading tweet ${tweetId}]`;
+                }
+            } else {
+                consoleError(`Failed to fetch tweet embed for ID ${tweetId}. Status: ${response.status}`);
+                embedContainer.textContent = `[Failed to load tweet ${tweetId}]`;
+            }
+        },
+        onerror: function(response) {
+            consoleError(`Error fetching tweet embed for ID ${tweetId}:`, response);
+            embedContainer.textContent = `[Error fetching tweet ${tweetId}]`;
+        }
+    });
+
+    return embedContainer; // Return the container immediately
 }
 
 
@@ -1375,34 +1453,11 @@ function createStreamableEmbedElement(videoId) {
         // (This will be a separate change if current diff doesn't cover that move) - *Actually, previous diff added it inside main, let's adjust that assumption.*
         // For now, let's assume it's available. If ReferenceError, we'll move it.
 
-        const observerOptions = {
-            root: messagesContainer, // THIS IS THE KEY: root is the scrollable container
+        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, {
+            root: messagesContainer,
             rootMargin: '0px 0px 300px 0px',
             threshold: 0.01
-        };
-
-        // Re-using the handleIntersection from main's scope (or it needs to be global)
-        // If handleIntersection is defined inside main, it won't be accessible here directly unless passed or global.
-        // Let's assume for now it WILL be made accessible (e.g. defined at IIFE scope).
-        // The previous diff put handleIntersection in main, so this will cause an error.
-        // I will need to adjust the location of handleIntersection definition.
-        // For this step, I will proceed assuming it's accessible.
-        // The actual creation:
-        // mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        // consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
-        // This needs `handleIntersection` to be in scope. The previous diff added it inside `main`.
-        // I will adjust the previous diff in my mind and assume `handleIntersection` is now at the IIFE's top level scope.
-        // So, the following line should work under that assumption:
-
-        // Re-evaluating: The `handleIntersection` function was defined inside `main`.
-        // It's better to define it at a higher scope if it's to be used by `renderMessagesInViewer`
-        // and potentially other functions. Let's define it at the IIFE scope.
-        // This means I need a step to move `handleIntersection` first.
-        // For now, I'll put a placeholder here and then make a specific change for `handleIntersection`.
-
-        // Now that handleIntersection is at IIFE scope, this should work:
-        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
+        });
         messagesContainer.style.cssText = `
             position: absolute;
             top: 0;
@@ -1414,14 +1469,14 @@ function createStreamableEmbedElement(videoId) {
             box-sizing: border-box;
             /* width and height are now controlled by absolute positioning */
         `;
-        // Note: otk-messages-container now fills otk-viewer and handles all padding and scrolling.
-        // otkViewer has 10px top/bottom padding, so messagesContainer effectively has that spacing.
+        otkViewer.appendChild(messagesContainer);
 
         const totalMessagesToRender = allMessages.length;
         let messagesProcessedInViewer = 0;
         let imagesFoundInViewer = 0;
         let videosFoundInViewer = 0;
         const mediaLoadPromises = [];
+        const embedWrappers = [];
         const updateInterval = Math.max(1, Math.floor(totalMessagesToRender / 20)); // Update progress roughly 20 times or every message
 
         for (let i = 0; i < totalMessagesToRender; i++) {
@@ -1432,7 +1487,11 @@ function createStreamableEmbedElement(videoId) {
             const threadColor = getThreadColor(message.originalThreadId);
 
             const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor, null); // Top-level messages have no parent
-            messagesContainer.appendChild(messageElement);
+            if (messageElement) {
+                messagesContainer.appendChild(messageElement);
+                const wrappers = messageElement.querySelectorAll('.otk-youtube-embed-wrapper, .otk-twitch-embed-wrapper, .otk-streamable-embed-wrapper, .twitter-tweet');
+                wrappers.forEach(wrapper => embedWrappers.push(wrapper));
+            }
 
             messagesProcessedInViewer++;
 
@@ -1461,6 +1520,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 // updateDisplayedStatistics(); // Refresh stats display -- MOVED TO AFTER PROMISES
 
         Promise.all(mediaLoadPromises).then(() => {
+            embedWrappers.forEach(wrapper => mediaIntersectionObserver.observe(wrapper));
             consoleLog("All inline media load attempts complete.");
             updateLoadingProgress(95, "Finalizing view...");
     viewerActiveImageCount = uniqueImageViewerHashes.size;
@@ -1539,18 +1599,30 @@ function _populateAttachmentDivWithMedia(
 
     if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
         // --- IMAGE LOGIC ---
-        const { w: displayW, h: displayH, tn_w: thumbW, tn_h: thumbH } = message.attachment;
+        // Unified image logic (derived from New Design's more feature-rich version)
+        let defaultToThumbnail;
+        let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
 
-        // Determine if image should start as full-size or thumbnail
-        const startFullSize = (displayW <= 570 && displayH <= 730) || (displayW <= 2050 && displayH < 530);
-        const defaultToThumbnail = !startFullSize;
+        if (layoutStyle === 'new_design') {
+            if (isTopLevelMessage) {
+                defaultToThumbnail = !isFirstFullSizeRender;
+            } else { // Quoted message in New Design
+                defaultToThumbnail = true;
+            }
+            if (isFirstFullSizeRender && isTopLevelMessage) { // Only add to set if it's going to be shown full size initially for top-level new design
+                renderedFullSizeImageHashes.add(filehash);
+            }
+        } else { // Default layout image logic
+            defaultToThumbnail = !isFirstFullSizeRender; // Show full if first time this hash is rendered full-size, else thumb.
+            if (isFirstFullSizeRender) {
+                 renderedFullSizeImageHashes.add(filehash); // Track for default layout as well
+            }
+        }
 
         const img = document.createElement('img');
         img.dataset.filehash = filehash;
-        img.dataset.thumbWidth = thumbW;
-        img.dataset.thumbHeight = thumbH;
-        img.dataset.fullWidth = displayW;
-        img.dataset.fullHeight = displayH;
+        img.dataset.thumbWidth = message.attachment.tn_w;
+        img.dataset.thumbHeight = message.attachment.tn_h;
         img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
         img.style.cursor = 'pointer';
         img.style.display = 'block';
@@ -1566,14 +1638,13 @@ function _populateAttachmentDivWithMedia(
                 img.src = img.dataset.thumbSrc;
                 img.style.width = img.dataset.thumbWidth + 'px';
                 img.style.height = img.dataset.thumbHeight + 'px';
-                img.style.maxWidth = '';
-                img.style.maxHeight = '';
+                img.style.maxWidth = ''; img.style.maxHeight = '';
             } else {
                 img.src = img.dataset.fullSrc;
-                img.style.maxWidth = '85%';
-                img.style.width = 'auto';
-                img.style.height = 'auto';
-                // Aspect ratio is maintained by browser with height: auto
+                img.style.maxWidth = '100%';
+                // Max height slightly different based on context in original code
+                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px'; // Adjusted quoted default slightly
+                img.style.width = 'auto'; img.style.height = 'auto';
             }
         };
         setImageProperties();
@@ -1582,16 +1653,18 @@ function _populateAttachmentDivWithMedia(
             const currentlyThumbnail = img.dataset.isThumbnail === 'true';
             if (currentlyThumbnail) {
                 img.src = img.dataset.fullSrc;
-                img.style.maxWidth = '85%';
-                img.style.width = 'auto';
-                img.style.height = 'auto';
+                img.style.maxWidth = '100%';
+                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px';
+                img.style.width = 'auto'; img.style.height = 'auto';
                 img.dataset.isThumbnail = 'false';
+                if (!renderedFullSizeImageHashes.has(filehash)) {
+                    renderedFullSizeImageHashes.add(filehash);
+                }
             } else {
                 img.src = img.dataset.thumbSrc;
                 img.style.width = img.dataset.thumbWidth + 'px';
                 img.style.height = img.dataset.thumbHeight + 'px';
-                img.style.maxWidth = '';
-                img.style.maxHeight = '';
+                img.style.maxWidth = ''; img.style.maxHeight = '';
                 img.dataset.isThumbnail = 'true';
             }
         });
@@ -1645,14 +1718,13 @@ function _populateAttachmentDivWithMedia(
             const videoElement = document.createElement('video');
             if (!message.attachment.tim || !message.attachment.ext) {
                 consoleError(`Video attachment for message ${message.id} is missing 'tim' or 'ext'. Cannot construct video src.`);
-                return;
+                // Potentially don't append, or append a placeholder? For now, it will have no src.
             } else {
                 videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`; // Ensure ext has a dot
             }
             videoElement.controls = true;
-            videoElement.style.maxWidth = '85%';
-            videoElement.style.width = 'auto';
-            videoElement.style.height = 'auto';
+            videoElement.style.maxWidth = '100%';
+            videoElement.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '300px';
             videoElement.style.borderRadius = '3px';
             videoElement.style.display = 'block';
             attachmentDiv.appendChild(videoElement);
@@ -1746,6 +1818,9 @@ function _populateAttachmentDivWithMedia(
         ];
         const inlineStreamablePatterns = [
             { type: 'video', regex: /(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+        ];
+        const twitterPatterns = [
+            { regex: /^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/\w+\/status\/(\d+)/, idGroup: 1 }
         ];
         // --- End of media pattern definitions ---
 
@@ -1923,6 +1998,23 @@ function _populateAttachmentDivWithMedia(
                         }
                     }
                     // Similar checks for Twitch and Streamable sole URLs... (omitted for brevity, but structure is the same)
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     if (!soleUrlEmbedMade) {
                         let currentTextSegment = line;
@@ -2422,6 +2514,23 @@ function _populateAttachmentDivWithMedia(
                     }
 
                     // Check for Sole Streamable URL
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (!soleUrlEmbedMade) {
                         for (const patternObj of streamablePatterns) {
                             const match = trimmedLine.match(patternObj.regex);
@@ -4910,6 +5019,60 @@ function setupOptionsWindow() {
     // Anchor Highlight Colors
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Background:", storageKey: 'anchorHighlightBgColor', cssVariable: '--otk-anchor-highlight-bg-color', defaultValue: '#4a4a3a', inputType: 'color', idSuffix: 'anchor-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Border:", storageKey: 'anchorHighlightBorderColor', cssVariable: '--otk-anchor-highlight-border-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'anchor-border' }));
+
+    const tweetEmbedModeGroup = document.createElement('div');
+    tweetEmbedModeGroup.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-bottom: 5px;
+    `;
+    const tweetEmbedModeLabel = document.createElement('label');
+    tweetEmbedModeLabel.textContent = "Tweet Embeds:";
+    tweetEmbedModeLabel.htmlFor = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeLabel.style.cssText = `
+        font-size: 12px;
+        text-align: left;
+        flex-basis: 230px;
+        flex-shrink: 0;
+    `;
+    const tweetEmbedModeControlsWrapper = document.createElement('div');
+    tweetEmbedModeControlsWrapper.style.cssText = `
+        display: flex;
+        flex-grow: 1;
+        align-items: center;
+    `;
+    const tweetEmbedModeDropdown = document.createElement('select');
+    tweetEmbedModeDropdown.id = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeDropdown.style.cssText = `
+        flex-grow: 1;
+        height: 25px;
+        box-sizing: border-box;
+        font-size: 12px;
+        text-align: center;
+        text-align-last: center;
+    `;
+    const tweetEmbedOptions = [
+        { label: 'Disabled', value: 'disabled' },
+        { label: 'Default', value: 'default' },
+        { label: 'Dark Mode', value: 'dark' }
+    ];
+    tweetEmbedOptions.forEach(opt => {
+        const optionElement = document.createElement('option');
+        optionElement.value = opt.value;
+        optionElement.textContent = opt.label;
+        tweetEmbedModeDropdown.appendChild(optionElement);
+    });
+    tweetEmbedModeDropdown.value = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
+    tweetEmbedModeDropdown.addEventListener('change', () => {
+        localStorage.setItem(TWEET_EMBED_MODE_KEY, tweetEmbedModeDropdown.value);
+        forceViewerRerenderAfterThemeChange();
+    });
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeLabel);
+    tweetEmbedModeControlsWrapper.appendChild(tweetEmbedModeDropdown);
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeControlsWrapper);
+    themeOptionsContainer.appendChild(tweetEmbedModeGroup);
 
     // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
