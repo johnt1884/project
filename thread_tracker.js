@@ -311,7 +311,7 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         if (quotedMessageObject) {
             const quotedElement = createMessageElementDOM(
                 quotedMessageObject,
-                mediaLoadPromises, // Pass down mediaLoadPromises
+            mediaLoadPromises, // Pass down the array for mediaLoadPromises for quotes
                 uniqueImageViewerHashes,
                 // uniqueVideoViewerHashes, // Removed
                 quotedMessageObject.board || boardForLink,
@@ -535,9 +535,9 @@ function createTweetEmbedElement(tweetId) { // No longer takes mediaLoadPromises
 
     function getAllMessagesSorted() {
         let allMessages = [];
-        for (const threadId in messagesByThreadId) {
-            // Now includes messages from all threads for which we have data, not just active ones
-            if (messagesByThreadId.hasOwnProperty(threadId)) {
+        const allThreadIds = Object.keys(messagesByThreadId);
+        for (const threadId of allThreadIds) {
+            if (messagesByThreadId.hasOwnProperty(threadId) && Array.isArray(messagesByThreadId[threadId])) {
                 allMessages = allMessages.concat(messagesByThreadId[threadId]);
             }
         }
@@ -1002,6 +1002,19 @@ function createTweetEmbedElement(tweetId) { // No longer takes mediaLoadPromises
 
     function padNumber(num, length) {
         return String(num).padStart(length, '0');
+    }
+
+    function animateCounter(element, start, end, duration) {
+        let startTimestamp = null;
+        const step = (timestamp) => {
+            if (!startTimestamp) startTimestamp = timestamp;
+            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+            element.textContent = ` (+${Math.floor(progress * (end - start) + start)} new)`;
+            if (progress < 1) {
+                window.requestAnimationFrame(step);
+            }
+        };
+        window.requestAnimationFrame(step);
     }
 
     function hexToRgbParts(hex) {
@@ -1862,6 +1875,7 @@ function _populateAttachmentDivWithMedia(
                         }
 
                         if (quotedMessageObject) {
+                            consoleLog(`[QuoteDebug] new_design: Calling createMessageElementDOM for quote ${quotedMessageId}. mediaLoadPromises is an array: ${Array.isArray(mediaLoadPromises)}`);
                             const quotedElement = createMessageElementDOM(
                                 quotedMessageObject,
                                 mediaLoadPromises,
@@ -1869,7 +1883,8 @@ function _populateAttachmentDivWithMedia(
                                 quotedMessageObject.board || boardForLink,
                                 false, // isTopLevelMessage = false for quotes
                                 currentDepth + 1,
-                                null // threadColor is not used for quoted message accents in new design
+                                null, // threadColor is not used for quoted message accents in new design
+                                message.id // Pass the PARENT message's ID for the quote
                             );
                             if (quotedElement) {
                                 quotedMessagesContainer.appendChild(quotedElement);
@@ -2599,7 +2614,7 @@ function _populateAttachmentDivWithMedia(
                                 processedAsEmbed = true;
 
                                 if (earliestMatch.index > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, message.id);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
 
                                 const matchedUrl = earliestMatch[0];
@@ -2652,7 +2667,7 @@ function _populateAttachmentDivWithMedia(
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                             } else {
                                 if (currentTextSegment.length > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, message.id);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
                                 currentTextSegment = "";
                             }
@@ -3236,7 +3251,7 @@ function _populateAttachmentDivWithMedia(
     }
 
     async function backgroundRefreshThreadsAndMessages(options = {}) { // Added options parameter
-        const { skipViewerUpdate = false } = options; // Destructure with default
+        const { skipViewerUpdate = false, isBackground = false } = options; // Destructure with default
 
         if (isManualRefreshInProgress) {
             consoleLog('[BG] Manual refresh in progress, skipping background refresh.');
@@ -3252,16 +3267,30 @@ function _populateAttachmentDivWithMedia(
             const previousActiveThreadIds = new Set(activeThreads.map(id => Number(id)));
             consoleLog('[BG] Previous active threads:', Array.from(previousActiveThreadIds));
 
-            // Remove threads no longer in catalog
-            activeThreads = activeThreads.filter(threadId => {
-                const isLive = foundIds.has(Number(threadId));
-                if (!isLive) {
-                    consoleLog(`[BG] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
-                    // delete messagesByThreadId[threadId]; // Retain messages
-                    // delete threadColors[threadId]; // Handle threadColors in a later step
-                }
-                return isLive;
-            });
+            // New logic for handling threads no longer in catalog
+            const threadsToPotentiallyDrop = activeThreads.filter(threadId => !foundIds.has(Number(threadId)));
+            const threadsToKeep = activeThreads.filter(threadId => foundIds.has(Number(threadId)));
+
+            const checkPromises = threadsToPotentiallyDrop.map(threadId =>
+                fetch(`https://a.4cdn.org/b/thread/${threadId}.json`, { cache: 'no-store' })
+                    .then(response => {
+                        if (response.ok) {
+                            consoleLog(`[BG] Thread ${threadId} not in catalog, but still active. Retaining.`);
+                            return threadId; // Keep it
+                        }
+                        consoleLog(`[BG] Thread ${threadId} confirmed dead (404). Dropping.`);
+                        return null; // Drop it
+                    })
+                    .catch(error => {
+                        consoleError(`[BG] Error checking status of thread ${threadId}:`, error);
+                        return null; // Drop on error
+                    })
+            );
+
+            const checkedThreads = await Promise.all(checkPromises);
+            const stillActiveThreads = checkedThreads.filter(id => id !== null);
+
+            activeThreads = [...threadsToKeep, ...stillActiveThreads];
 
             // Add new threads
             foundThreads.forEach(t => {
@@ -3274,23 +3303,24 @@ function _populateAttachmentDivWithMedia(
             });
             consoleLog(`[BG] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
 
-            const fetchPromisesBg = activeThreads.map(threadId =>
-                fetchThreadMessages(threadId)
-                    .then(messages => ({ threadId, messages, status: 'fulfilled' }))
-                    .catch(error => ({ threadId, error, status: 'rejected' }))
-            );
+            const fetchPromisesBg = activeThreads.map(threadId => {
+                return fetchThreadMessages(threadId)
+                    .then(result => ({ threadId, messages: result, status: 'fulfilled' }))
+                    .catch(error => ({ threadId, error, status: 'rejected' }));
+            });
 
-            const resultsBg = await Promise.allSettled(fetchPromisesBg);
+            const resultsBg = await Promise.all(fetchPromisesBg);
 
+            let allNewMessages = [];
             resultsBg.forEach(result => {
                 // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
-                if (result.status === 'fulfilled' && result.value) {
+                if (result.status === 'fulfilled' && result) {
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Fulfilled promise value:', JSON.stringify(result.value)); // Removed
-                    const { threadId, messages: newMessages, status: fetchStatus } = result.value;
+                    const { threadId, messages: newMessagesResult, status: fetchStatus } = result;
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Destructured - threadId:', threadId, 'fetchStatus (from wrapper):', fetchStatus, 'newMessages type:', typeof newMessages, 'is Array?:', Array.isArray(newMessages), 'length (if array):', Array.isArray(newMessages) ? newMessages.length : 'N/A'); // Removed
 
                     if (fetchStatus === 'rejected') {
-                        consoleError(`[BG] Error fetching thread ${threadId}:`, result.value.error);
+                        consoleError(`[BG] Error fetching thread ${threadId}:`, result.error);
                         return;
                     }
 
@@ -3298,25 +3328,28 @@ function _populateAttachmentDivWithMedia(
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
 
                     // Handle 'not_modified' status from fetchThreadMessages
-                    if (newMessages && typeof newMessages === 'object' && newMessages.status === 'not_modified' && newMessages.threadId === threadId) {
+                    if (newMessagesResult && typeof newMessagesResult === 'object' && newMessagesResult.status === 'not_modified' && newMessagesResult.threadId === threadId) {
                         consoleLog(`[BG] Thread ${threadId} was not modified. Skipping message update for this thread.`);
-                    } else if (Array.isArray(newMessages) && newMessages.length > 0) { // Regular message array
+                    } else if (newMessagesResult && Array.isArray(newMessagesResult.messages) && newMessagesResult.messages.length > 0) { // Regular message array
                         // consoleLog(`[DebugRefreshV2][BG] backgroundRefresh - Processing ${newMessages.length} messages for thread ${threadId}.`); // Removed
-                        consoleLog(`[BG] Processing ${newMessages.length} messages for thread ${threadId}.`); // Standard log
+                        consoleLog(`[BG] Processing ${newMessagesResult.messages.length} messages for thread ${threadId}.`); // Standard log
                         let existing = messagesByThreadId[threadId] || [];
                         let existingIds = new Set(existing.map(m => m.id));
                         let updatedMessages = [...existing];
-                        newMessages.forEach(m => {
+                        let newMessagesInThread = [];
+                        newMessagesResult.messages.forEach(m => {
                             if (!existingIds.has(m.id)) {
                                 updatedMessages.push(m);
+                                newMessagesInThread.push(m);
                             }
                         });
+                        allNewMessages.push(...newMessagesInThread);
                         updatedMessages.sort((a, b) => a.time - b.time);
                         messagesByThreadId[threadId] = updatedMessages;
                         if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                            messagesByThreadId[threadId][0].title = newMessages[0].title;
+                            messagesByThreadId[threadId][0].title = newMessagesResult.messages[0].title;
                         }
-                    } else if (newMessages && newMessages.length === 0) {
+                    } else if (newMessagesResult && newMessagesResult.messages.length === 0) {
                         consoleLog(`[BG] No new messages returned or thread is empty for active thread ${threadId}.`);
                         // Note: Thread pruning logic based on catalog scan is primary.
                         // If fetchThreadMessages returns empty for a 404, it might have been removed from activeThreads already by catalog logic.
@@ -3339,14 +3372,21 @@ function _populateAttachmentDivWithMedia(
             consoleLog('[BG] Data saved. Dispatching otkMessagesUpdated event.');
             window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
             renderThreadList();
-            updateDisplayedStatistics();
-            consoleLog('[BG] Background refresh complete.');
 
-            // No viewer updates from background refresh if skipViewerUpdate is true (it defaults to false)
-            // This function doesn't directly update the viewer itself, but triggers events or relies on other calls.
-            // The main concern is if it were to call renderMessagesInViewer or appendNewMessagesToViewer.
-            // Currently, it does not, so skipViewerUpdate has no direct effect here yet unless other logic is added.
-            // This is more of a placeholder if background tasks were to interact with the viewer DOM.
+            // Pass the calculated new counts to updateDisplayedStatistics
+            const newCounts = {
+                isBackgroundUpdate: isBackground,
+                newMessagesCount: allNewMessages.length,
+                newImagesCount: allNewMessages.filter(m => m.attachment && ['.jpg', '.jpeg', '.png', '.gif'].includes(m.attachment.ext.toLowerCase())).length,
+                newVideosCount: allNewMessages.filter(m => m.attachment && ['.webm', '.mp4'].includes(m.attachment.ext.toLowerCase())).length
+            };
+            updateDisplayedStatistics(newCounts);
+
+            if (isBackground && otkViewer && otkViewer.style.display === 'block' && allNewMessages.length > 0) {
+                // appendNewMessagesToViewer(allNewMessages);
+            }
+
+            consoleLog('[BG] Background refresh complete.');
 
         } catch (error) {
             consoleError('[BG] Error during background refresh:', error.message, error.stack);
@@ -3360,6 +3400,7 @@ function _populateAttachmentDivWithMedia(
         isManualRefreshInProgress = true;
         showLoadingScreen("Initializing refresh..."); // Initial message
         try {
+            lastUserActivity = Date.now(); // Reset user activity timer on manual refresh
             await new Promise(resolve => setTimeout(resolve, 50)); // Ensure loading screen renders
 
             updateLoadingProgress(5, "Scanning catalog for OTK threads...");
@@ -3371,15 +3412,29 @@ function _populateAttachmentDivWithMedia(
             const previousActiveThreadIds = new Set(activeThreads.map(id => Number(id)));
             let threadsToFetch = []; // Store actual threadIds to fetch
 
-            activeThreads = activeThreads.filter(threadId => {
-                const isLive = foundIds.has(Number(threadId));
-                if (!isLive) {
-                    consoleLog(`[Manual] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
-                    // delete messagesByThreadId[threadId]; // Retain messages
-                    // delete threadColors[threadId]; // Handle threadColors in a later step
-                }
-                return isLive;
-            });
+            const threadsToPotentiallyDrop_manual = activeThreads.filter(threadId => !foundIds.has(Number(threadId)));
+            const threadsToKeep_manual = activeThreads.filter(threadId => foundIds.has(Number(threadId)));
+
+            const checkPromises_manual = threadsToPotentiallyDrop_manual.map(threadId =>
+                fetch(`https://a.4cdn.org/b/thread/${threadId}.json`, { cache: 'no-store' })
+                    .then(response => {
+                        if (response.ok) {
+                            consoleLog(`[Manual] Thread ${threadId} not in catalog, but still active. Retaining.`);
+                            return threadId;
+                        }
+                        consoleLog(`[Manual] Thread ${threadId} confirmed dead (404). Dropping.`);
+                        return null;
+                    })
+                    .catch(error => {
+                        consoleError(`[Manual] Error checking status of thread ${threadId}:`, error);
+                        return null;
+                    })
+            );
+
+            const checkedThreads_manual = await Promise.all(checkPromises_manual);
+            const stillActiveThreads_manual = checkedThreads_manual.filter(id => id !== null);
+
+            activeThreads = [...threadsToKeep_manual, ...stillActiveThreads_manual];
 
             foundThreads.forEach(t => {
                 const threadIdNum = Number(t.id);
@@ -3681,7 +3736,9 @@ function _populateAttachmentDivWithMedia(
         }
     }
 
-    function updateDisplayedStatistics() {
+    function updateDisplayedStatistics(options = {}) {
+        const { isBackgroundUpdate = false, newMessagesCount = 0, newImagesCount = 0, newVideosCount = 0 } = options;
+
         const threadsTrackedElem = document.getElementById('otk-threads-tracked-stat');
         const totalMessagesElem = document.getElementById('otk-total-messages-stat');
         const localImagesElem = document.getElementById('otk-local-images-stat');
@@ -3690,32 +3747,44 @@ function _populateAttachmentDivWithMedia(
         if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
             const liveThreadsCount = activeThreads.length;
             let totalMessagesCount = 0;
-            // Count all messages from all stored threads for "Total Messages"
             for (const threadId in messagesByThreadId) {
                 if (messagesByThreadId.hasOwnProperty(threadId)) {
                     totalMessagesCount += (messagesByThreadId[threadId] || []).length;
                 }
             }
+
             const paddingLength = 4;
             threadsTrackedElem.textContent = `- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}`;
-            // totalMessagesElem now reflects all stored messages, not just from activeThreads
-            totalMessagesElem.textContent = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
+
+            const baseMessagesText = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
+            totalMessagesElem.textContent = baseMessagesText;
+            if (isBackgroundUpdate && newMessagesCount > 0) {
+                const newMessagesSpan = document.createElement('span');
+                totalMessagesElem.appendChild(newMessagesSpan);
+                animateCounter(newMessagesSpan, 0, newMessagesCount, 1000);
+            }
 
             const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
             const videoCountFromStorage = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
 
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: viewerActiveImageCount = ${viewerActiveImageCount}, viewerActiveVideoCount = ${viewerActiveVideoCount}`);
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: imageCountFromStorage = ${imageCountFromStorage}, videoCountFromStorage = ${videoCountFromStorage}`);
-
             const imageCountToDisplay = viewerActiveImageCount !== null ? viewerActiveImageCount : imageCountFromStorage;
             const videoCountToDisplay = viewerActiveVideoCount !== null ? viewerActiveVideoCount : videoCountFromStorage;
 
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: imageCountToDisplay = ${imageCountToDisplay}, videoCountToDisplay = ${videoCountToDisplay}`);
+            const baseImagesText = `- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`;
+            localImagesElem.textContent = baseImagesText;
+            if (isBackgroundUpdate && newImagesCount > 0) {
+                const newImagesSpan = document.createElement('span');
+                localImagesElem.appendChild(newImagesSpan);
+                animateCounter(newImagesSpan, 0, newImagesCount, 1000);
+            }
 
-            localImagesElem.textContent = `- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`;
-            localVideosElem.textContent = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
-
-            // consoleLog(`Statistics updated: Live Threads: ${liveThreadsCount}, Total Messages: ${totalMessagesCount}, Images: ${imageCountToDisplay}, Videos: ${videoCountToDisplay}`);
+            const baseVideosText = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
+            localVideosElem.textContent = baseVideosText;
+            if (isBackgroundUpdate && newVideosCount > 0) {
+                const newVideosSpan = document.createElement('span');
+                localVideosElem.appendChild(newVideosSpan);
+                animateCounter(newVideosSpan, 0, newVideosCount, 1000);
+            }
         } else {
             consoleWarn('One or more statistics elements not found in GUI. Threads, Messages, Images, or Videos.');
         }
@@ -3801,6 +3870,9 @@ function _populateAttachmentDivWithMedia(
                 consoleLog('[GUI] Data refresh complete.');
             } catch (error) {
                 consoleError('[GUI] Error during data refresh:', error);
+            } finally {
+                stopBackgroundRefresh();
+                startBackgroundRefresh();
             }
             // No finally block needed here to re-enable the button, as it's never disabled.
         });
@@ -3926,24 +3998,37 @@ function _populateAttachmentDivWithMedia(
     }
 
     // --- Background Refresh Control ---
+    let lastUserActivity = Date.now();
+
     function startBackgroundRefresh() {
         if (localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) === 'true') {
             consoleLog('Background updates are disabled. Not starting refresh interval.');
             return;
         }
         if (backgroundRefreshIntervalId === null) { // Only start if not already running
-            let frequencySeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10); // Default to 120s (2 min)
-            // Validate against the new effective range (120 seconds to 3600 seconds/1 hour)
-            if (isNaN(frequencySeconds) || frequencySeconds < 120 || frequencySeconds > 3600) {
-                frequencySeconds = 120; // Default (2 min) if stored value is invalid or out of overall bounds
-            }
-            const refreshIntervalMs = frequencySeconds * 1000;
+            const minUpdateMinutes = parseInt(localStorage.getItem('otkMinUpdateSeconds') || '2', 10);
+            const maxUpdateMinutes = parseInt(localStorage.getItem('otkMaxUpdateSeconds') || '5', 10);
+            const suspendAfterInactiveMinutes = parseInt(localStorage.getItem('otkSuspendAfterInactiveMinutes') || '30', 10);
+            const minUpdateSeconds = minUpdateMinutes * 60;
+            const maxUpdateSeconds = maxUpdateMinutes * 60;
+            const randomIntervalSeconds = Math.floor(Math.random() * (maxUpdateSeconds - minUpdateSeconds + 1)) + minUpdateSeconds;
+            const refreshIntervalMs = randomIntervalSeconds * 1000;
 
-            // Pass default options to backgroundRefreshThreadsAndMessages
-            backgroundRefreshIntervalId = setInterval(() => backgroundRefreshThreadsAndMessages(), refreshIntervalMs);
-            consoleLog(`Background refresh scheduled every ${frequencySeconds} seconds.`);
-        } else {
-            consoleLog('Background refresh interval already active (will use new frequency on next auto-restart if changed).');
+            backgroundRefreshIntervalId = setTimeout(() => {
+                const now = Date.now();
+                const inactiveDuration = now - lastUserActivity;
+                consoleLog(`[BG] Checking for suspension: Inactive for ${Math.round(inactiveDuration / 1000)}s. Suspend after ${suspendAfterInactiveMinutes * 60}s.`);
+                if (inactiveDuration > suspendAfterInactiveMinutes * 60 * 1000) {
+                    consoleLog(`[BG] Updates suspended due to inactivity.`);
+                    stopBackgroundRefresh();
+                    return;
+                }
+                backgroundRefreshThreadsAndMessages({ isBackground: true });
+                backgroundRefreshIntervalId = null; // Reset for the next cycle
+                startBackgroundRefresh(); // Schedule the next update
+            }, refreshIntervalMs);
+
+            consoleLog(`Background refresh scheduled in ${Math.floor(randomIntervalSeconds / 60)}m ${randomIntervalSeconds % 60}s. Next update at ~${new Date(Date.now() + refreshIntervalMs).toLocaleTimeString()}`);
         }
     }
 
@@ -4459,63 +4544,44 @@ function setupOptionsWindow() {
     generalSettingsSection.appendChild(trackedKeywordsGroup);
 
     // --- Background Update Frequency Option ---
-    const bgUpdateFreqGroup = document.createElement('div');
-    // Apply Flexbox styling
-    bgUpdateFreqGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
-
-    const bgUpdateFreqLabel = document.createElement('label');
-    bgUpdateFreqLabel.textContent = "Update Frequency (min >= 2.0):"; // Updated label
-    bgUpdateFreqLabel.htmlFor = 'otk-bg-update-freq-input';
-    // Apply Flexbox label styling
-    bgUpdateFreqLabel.style.cssText = "font-size: 12px; text-align: left; flex-basis: 230px; flex-shrink: 0;";
-
-    const bgUpdateFreqControlsWrapper = document.createElement('div');
-    // Removed justify-content: flex-end;
-    bgUpdateFreqControlsWrapper.style.cssText = "display: flex; flex-grow: 1; align-items: center; gap: 8px; min-width: 0;";
-
-    const bgUpdateFreqInput = document.createElement('input');
-    bgUpdateFreqInput.type = 'number';
-    bgUpdateFreqInput.id = 'otk-bg-update-freq-input';
-    bgUpdateFreqInput.min = '2.0'; // UI min in minutes (120 seconds)
-    bgUpdateFreqInput.step = '0.5';
-    // Changed to width: 100% and text-align: right
-    bgUpdateFreqInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: right;";
-
-    let initialStoredFreqSeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10);
-    if (isNaN(initialStoredFreqSeconds) || initialStoredFreqSeconds < 120) {
-        initialStoredFreqSeconds = 120;
-    }
-    bgUpdateFreqInput.value = (initialStoredFreqSeconds / 60).toFixed(1);
-
-    bgUpdateFreqInput.addEventListener('change', () => {
-        let inputMinutes = parseFloat(bgUpdateFreqInput.value);
-        const minSecondsStorage = 120;
-        const maxSecondsStorage = 3600;
-        let newFrequencySecondsToStore;
-
-        if (isNaN(inputMinutes) || inputMinutes < (minSecondsStorage / 60)) {
-            newFrequencySecondsToStore = 120;
-        } else {
-            newFrequencySecondsToStore = Math.round(inputMinutes * 60);
-        }
-
-        if (newFrequencySecondsToStore < minSecondsStorage) {
-            newFrequencySecondsToStore = minSecondsStorage;
-        } else if (newFrequencySecondsToStore > maxSecondsStorage) {
-            newFrequencySecondsToStore = maxSecondsStorage;
-        }
-
-        bgUpdateFreqInput.value = (newFrequencySecondsToStore / 60).toFixed(1);
-        localStorage.setItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY, newFrequencySecondsToStore.toString());
-        consoleLog(`Background update frequency saved as: ${newFrequencySecondsToStore} seconds. UI shows: ${bgUpdateFreqInput.value} min. Restarting interval.`);
-        stopBackgroundRefresh();
-        startBackgroundRefresh();
+    const minUpdateGroup = createThemeOptionRow({
+        labelText: "Minimum time between updates (minutes):",
+        storageKey: 'otkMinUpdateSeconds',
+        cssVariable: '--otk-min-update-seconds',
+        defaultValue: '120',
+        inputType: 'number',
+        unit: null,
+        min: 2,
+        max: 60,
+        idSuffix: 'min-update-seconds'
     });
+    generalSettingsSection.appendChild(minUpdateGroup);
 
-    bgUpdateFreqControlsWrapper.appendChild(bgUpdateFreqInput);
-    bgUpdateFreqGroup.appendChild(bgUpdateFreqLabel);
-    bgUpdateFreqGroup.appendChild(bgUpdateFreqControlsWrapper);
-    generalSettingsSection.appendChild(bgUpdateFreqGroup);
+    const maxUpdateGroup = createThemeOptionRow({
+        labelText: "Maximum time between updates (minutes):",
+        storageKey: 'otkMaxUpdateSeconds',
+        cssVariable: '--otk-max-update-seconds',
+        defaultValue: '300',
+        inputType: 'number',
+        unit: null,
+        min: 4,
+        max: 60,
+        idSuffix: 'max-update-seconds'
+    });
+    generalSettingsSection.appendChild(maxUpdateGroup);
+
+    const suspendAfterGroup = createThemeOptionRow({
+        labelText: "Suspend updates after (minutes):",
+        storageKey: 'otkSuspendAfterInactiveMinutes',
+        cssVariable: '--otk-suspend-after-inactive-minutes',
+        defaultValue: '30',
+        inputType: 'number',
+        unit: null,
+        min: 10,
+        max: 60,
+        idSuffix: 'suspend-after-inactive-minutes'
+    });
+    generalSettingsSection.appendChild(suspendAfterGroup);
 
     // --- Debugging Toggle Option ---
     const debugToggleGroup = document.createElement('div');
@@ -5584,6 +5650,17 @@ function setupOptionsWindow() {
             // Future: save position to localStorage here if desired
             // localStorage.setItem('otkOptionsWindowPos', JSON.stringify({top: optionsWindow.style.top, left: optionsWindow.style.left}));
         }
+    });
+
+    ['mousemove', 'keydown', 'scroll'].forEach(eventName => {
+        document.addEventListener(eventName, () => {
+            consoleLog(`User activity detected: ${eventName}`);
+            lastUserActivity = Date.now();
+            if (backgroundRefreshIntervalId === null && localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) !== 'true') {
+                consoleLog("User activity detected, restarting background updates.");
+                startBackgroundRefresh();
+            }
+        });
     });
 
     consoleLog("Options Window setup complete with drag functionality.");
