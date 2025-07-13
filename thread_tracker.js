@@ -1539,30 +1539,18 @@ function _populateAttachmentDivWithMedia(
 
     if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
         // --- IMAGE LOGIC ---
-        // Unified image logic (derived from New Design's more feature-rich version)
-        let defaultToThumbnail;
-        let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
+        const { w: displayW, h: displayH, tn_w: thumbW, tn_h: thumbH } = message.attachment;
 
-        if (layoutStyle === 'new_design') {
-            if (isTopLevelMessage) {
-                defaultToThumbnail = !isFirstFullSizeRender;
-            } else { // Quoted message in New Design
-                defaultToThumbnail = true;
-            }
-            if (isFirstFullSizeRender && isTopLevelMessage) { // Only add to set if it's going to be shown full size initially for top-level new design
-                renderedFullSizeImageHashes.add(filehash);
-            }
-        } else { // Default layout image logic
-            defaultToThumbnail = !isFirstFullSizeRender; // Show full if first time this hash is rendered full-size, else thumb.
-            if (isFirstFullSizeRender) {
-                 renderedFullSizeImageHashes.add(filehash); // Track for default layout as well
-            }
-        }
+        // Determine if image should start as full-size or thumbnail
+        const startFullSize = (displayW <= 570 && displayH <= 730) || (displayW <= 2050 && displayH < 530);
+        const defaultToThumbnail = !startFullSize;
 
         const img = document.createElement('img');
         img.dataset.filehash = filehash;
-        img.dataset.thumbWidth = message.attachment.tn_w;
-        img.dataset.thumbHeight = message.attachment.tn_h;
+        img.dataset.thumbWidth = thumbW;
+        img.dataset.thumbHeight = thumbH;
+        img.dataset.fullWidth = displayW;
+        img.dataset.fullHeight = displayH;
         img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
         img.style.cursor = 'pointer';
         img.style.display = 'block';
@@ -1578,13 +1566,14 @@ function _populateAttachmentDivWithMedia(
                 img.src = img.dataset.thumbSrc;
                 img.style.width = img.dataset.thumbWidth + 'px';
                 img.style.height = img.dataset.thumbHeight + 'px';
-                img.style.maxWidth = ''; img.style.maxHeight = '';
+                img.style.maxWidth = '';
+                img.style.maxHeight = '';
             } else {
                 img.src = img.dataset.fullSrc;
-                img.style.maxWidth = '100%';
-                // Max height slightly different based on context in original code
-                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px'; // Adjusted quoted default slightly
-                img.style.width = 'auto'; img.style.height = 'auto';
+                img.style.maxWidth = '85%';
+                img.style.width = 'auto';
+                img.style.height = 'auto';
+                // Aspect ratio is maintained by browser with height: auto
             }
         };
         setImageProperties();
@@ -1593,18 +1582,16 @@ function _populateAttachmentDivWithMedia(
             const currentlyThumbnail = img.dataset.isThumbnail === 'true';
             if (currentlyThumbnail) {
                 img.src = img.dataset.fullSrc;
-                img.style.maxWidth = '100%';
-                img.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '350px';
-                img.style.width = 'auto'; img.style.height = 'auto';
+                img.style.maxWidth = '85%';
+                img.style.width = 'auto';
+                img.style.height = 'auto';
                 img.dataset.isThumbnail = 'false';
-                if (!renderedFullSizeImageHashes.has(filehash)) {
-                    renderedFullSizeImageHashes.add(filehash);
-                }
             } else {
                 img.src = img.dataset.thumbSrc;
                 img.style.width = img.dataset.thumbWidth + 'px';
                 img.style.height = img.dataset.thumbHeight + 'px';
-                img.style.maxWidth = ''; img.style.maxHeight = '';
+                img.style.maxWidth = '';
+                img.style.maxHeight = '';
                 img.dataset.isThumbnail = 'true';
             }
         });
@@ -1658,13 +1645,14 @@ function _populateAttachmentDivWithMedia(
             const videoElement = document.createElement('video');
             if (!message.attachment.tim || !message.attachment.ext) {
                 consoleError(`Video attachment for message ${message.id} is missing 'tim' or 'ext'. Cannot construct video src.`);
-                // Potentially don't append, or append a placeholder? For now, it will have no src.
+                return;
             } else {
                 videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`; // Ensure ext has a dot
             }
             videoElement.controls = true;
-            videoElement.style.maxWidth = '100%';
-            videoElement.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '300px';
+            videoElement.style.maxWidth = '85%';
+            videoElement.style.width = 'auto';
+            videoElement.style.height = 'auto';
             videoElement.style.borderRadius = '3px';
             videoElement.style.display = 'block';
             attachmentDiv.appendChild(videoElement);
