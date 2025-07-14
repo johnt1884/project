@@ -779,25 +779,27 @@ requestAnimationFrame(() => {
         otkStatsDisplay.id = 'otk-stats-display';
         otkStatsDisplay.style.cssText = `
             font-size: 11px;
-            display: grid;
-            grid-template-columns: auto auto;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
             width: fit-content;
-            margin: 0 auto;
-            gap: 0 5px;
+            margin: 0 0 0 -20px;
         `;
 
         const threadsTrackedStat = document.createElement('div');
         threadsTrackedStat.id = 'otk-threads-tracked-stat';
-        threadsTrackedStat.style.gridColumn = '1 / span 2';
+        threadsTrackedStat.style.display = 'flex';
 
         const totalMessagesStat = document.createElement('div');
         totalMessagesStat.id = 'otk-total-messages-stat';
 
         const localImagesStat = document.createElement('div');
         localImagesStat.id = 'otk-local-images-stat';
+        localImagesStat.style.display = 'flex';
 
         const localVideosStat = document.createElement('div');
         localVideosStat.id = 'otk-local-videos-stat';
+        localVideosStat.style.display = 'flex';
 
         otkStatsDisplay.appendChild(threadsTrackedStat);
         otkStatsDisplay.appendChild(totalMessagesStat);
@@ -3447,7 +3449,6 @@ function _populateAttachmentDivWithMedia(
             localStorage.removeItem('otkNewMessagesCount');
             localStorage.removeItem('otkNewImagesCount');
             localStorage.removeItem('otkNewVideosCount');
-            lastUserActivity = Date.now(); // Reset user activity timer on manual refresh
             await new Promise(resolve => setTimeout(resolve, 50)); // Ensure loading screen renders
 
             updateLoadingProgress(5, "Scanning catalog for OTK threads...");
@@ -3588,9 +3589,6 @@ function _populateAttachmentDivWithMedia(
                 if (viewerIsOpen && newMessagesToAppend.length > 0) {
                     consoleLog(`[Manual Refresh] Viewer is open, appending ${newMessagesToAppend.length} new messages.`);
                     await appendNewMessagesToViewer(newMessagesToAppend);
-                } else if (viewerIsOpen) {
-                    consoleLog('[Manual Refresh] Viewer is open, but no new messages to append (or update skipped). Re-rendering for consistency.');
-                    await renderMessagesInViewer({ isToggleOpen: false });
                 }
             } else {
                 consoleLog('[Refresh] Viewer update skipped as requested by options.');
@@ -3762,7 +3760,7 @@ function _populateAttachmentDivWithMedia(
         }
     }
 
-    function updateDisplayedStatistics(options = {}) {
+    function updateDisplayedStatistics(catalogThreadIds = [], options = {}) {
         const { isBackgroundUpdate = false, newMessagesCount = 0, newImagesCount = 0, newVideosCount = 0 } = options;
 
         const threadsTrackedElem = document.getElementById('otk-threads-tracked-stat');
@@ -3771,7 +3769,7 @@ function _populateAttachmentDivWithMedia(
         const localVideosElem = document.getElementById('otk-local-videos-stat');
 
         if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
-            const liveThreadsCount = activeThreads.length;
+            const liveThreadsCount = catalogThreadIds.length;
             let totalMessagesCount = 0;
             for (const threadId in messagesByThreadId) {
                 if (messagesByThreadId.hasOwnProperty(threadId)) {
@@ -3780,7 +3778,7 @@ function _populateAttachmentDivWithMedia(
             }
 
             const paddingLength = 4;
-            threadsTrackedElem.textContent = `- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}`;
+            threadsTrackedElem.innerHTML = `<span>- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}</span>`;
 
             const baseMessagesText = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
             let newMessagesTotal = parseInt(localStorage.getItem('otkNewMessagesCount') || '0');
@@ -3793,7 +3791,7 @@ function _populateAttachmentDivWithMedia(
             if (newMessagesTotal > 0) {
                 newMessagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newMessagesTotal} new)</span>`;
             }
-            totalMessagesElem.innerHTML = `<span style="text-align: left;">${baseMessagesText}</span><span>${newMessagesText}</span>`;
+            totalMessagesElem.innerHTML = `<span>${baseMessagesText}</span>${newMessagesText}`;
 
             const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
             const videoCountFromStorage = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
@@ -3811,7 +3809,7 @@ function _populateAttachmentDivWithMedia(
             if (newImagesTotal > 0) {
                 newImagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newImagesTotal} new)</span>`;
             }
-            localImagesElem.innerHTML = `<span style="text-align: left;">${baseImagesText}</span><span>${newImagesText}</span>`;
+            localImagesElem.innerHTML = `<span>${baseImagesText}</span>${newImagesText}`;
 
 
             const baseVideosText = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
@@ -3824,7 +3822,7 @@ function _populateAttachmentDivWithMedia(
             if (newVideosTotal > 0) {
                 newVideosText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newVideosTotal} new)</span>`;
             }
-            localVideosElem.innerHTML = `<span style="text-align: left;">${baseVideosText}</span><span>${newVideosText}</span>`;
+            localVideosElem.innerHTML = `<span>${baseVideosText}</span>${newVideosText}`;
         } else {
             consoleWarn('One or more statistics elements not found in GUI. Threads, Messages, Images, or Videos.');
         }
@@ -4038,7 +4036,7 @@ function _populateAttachmentDivWithMedia(
     }
 
     // --- Background Refresh Control ---
-    let lastUserActivity = Date.now();
+    let scrollTimeout = null;
 
     function startBackgroundRefresh() {
         if (localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) === 'true') {
@@ -4048,20 +4046,24 @@ function _populateAttachmentDivWithMedia(
         if (backgroundRefreshIntervalId === null) { // Only start if not already running
             const minUpdateMinutes = parseInt(localStorage.getItem('otkMinUpdateSeconds') || '2', 10);
             const maxUpdateMinutes = parseInt(localStorage.getItem('otkMaxUpdateSeconds') || '5', 10);
-            const suspendAfterInactiveMinutes = parseInt(localStorage.getItem('otkSuspendAfterInactiveMinutes') || '30', 10);
             const minUpdateSeconds = minUpdateMinutes * 60;
             const maxUpdateSeconds = maxUpdateMinutes * 60;
             const randomIntervalSeconds = Math.floor(Math.random() * (maxUpdateSeconds - minUpdateSeconds + 1)) + minUpdateSeconds;
-            const refreshIntervalMs = randomIntervalSeconds * 1000;
+            let refreshIntervalMs = randomIntervalSeconds * 1000;
+
+            const nextUpdateTimestamp = Date.now() + refreshIntervalMs;
+            localStorage.setItem('otkNextUpdateTimestamp', nextUpdateTimestamp);
+
+            const lastUpdateTimestamp = parseInt(localStorage.getItem('otkNextUpdateTimestamp') || '0', 10);
+            if (Date.now() > lastUpdateTimestamp) {
+                refreshIntervalMs = 0;
+            }
+
 
             backgroundRefreshIntervalId = setTimeout(() => {
-                const now = Date.now();
-                const inactiveDuration = now - lastUserActivity;
-                consoleLog(`[BG] Suspension check at ${new Date().toLocaleTimeString()}: lastUserActivity=${new Date(lastUserActivity).toLocaleTimeString()}, inactiveDuration=${Math.round(inactiveDuration / 1000)}s, suspendAfter=${suspendAfterInactiveMinutes}min`);
-                if (inactiveDuration > suspendAfterInactiveMinutes * 60 * 1000) {
-                    consoleLog(`[BG] Updates suspended due to inactivity.`);
+                if (isSuspended) {
+                    consoleLog(`[BG] Updates suspended.`);
                     stopBackgroundRefresh();
-                    isSuspended = true;
                     showSuspendedScreen();
                     return;
                 }
@@ -4070,7 +4072,7 @@ function _populateAttachmentDivWithMedia(
                 startBackgroundRefresh(); // Schedule the next update
             }, refreshIntervalMs);
 
-            consoleLog(`Background refresh scheduled in ${Math.floor(randomIntervalSeconds / 60)}m ${randomIntervalSeconds % 60}s. Next update at ~${new Date(Date.now() + refreshIntervalMs).toLocaleTimeString()}`);
+            consoleLog(`Background refresh scheduled in ${minUpdateMinutes}-${maxUpdateMinutes} minutes. Next update at ~${new Date(Date.now() + refreshIntervalMs).toLocaleTimeString()}`);
         }
     }
 
@@ -5677,53 +5679,23 @@ function setupOptionsWindow() {
         }
     });
 
-    ['mousemove', 'keydown'].forEach(eventName => {
-        window.addEventListener(eventName, () => {
-            lastUserActivity = Date.now();
-            consoleLog(`[Activity] User activity detected: ${eventName}. isSuspended: ${isSuspended}, backgroundRefreshIntervalId: ${backgroundRefreshIntervalId}`);
-            if (isSuspended) {
-                consoleLog("[Activity] Unsuspending background updates.");
-                isSuspended = false;
-                hideSuspendedScreen();
-                startBackgroundRefresh();
-            } else if (backgroundRefreshIntervalId === null && localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) !== 'true') {
-                consoleLog("[Activity] Restarting background updates.");
-                startBackgroundRefresh();
-            }
-        });
-    });
-
     window.addEventListener('scroll', () => {
-        if (otkViewer && otkViewer.style.display === 'block') {
-            return; // Don't count scroll as activity if viewer is open
+        if (scrollTimeout) {
+            clearTimeout(scrollTimeout);
         }
-        lastUserActivity = Date.now();
-        consoleLog(`[Activity] User activity detected: scroll. isSuspended: ${isSuspended}, backgroundRefreshIntervalId: ${backgroundRefreshIntervalId}`);
         if (isSuspended) {
-            consoleLog("[Activity] Unsuspending background updates.");
+            consoleLog("[Scroll] Resuming background updates.");
             isSuspended = false;
             hideSuspendedScreen();
             startBackgroundRefresh();
-        } else if (backgroundRefreshIntervalId === null && localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) !== 'true') {
-            consoleLog("[Activity] Restarting background updates.");
-            startBackgroundRefresh();
         }
-    });
-
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            if (!isSuspended) {
-                consoleLog('[Visibility] Page hidden, suspending updates.');
-                stopBackgroundRefresh();
-                isSuspended = true;
-            }
-        } else {
-            if (isSuspended) {
-                consoleLog('[Visibility] Page visible, resuming updates.');
-                isSuspended = false;
-                startBackgroundRefresh();
-            }
-        }
+        const suspendAfterInactiveMinutes = parseInt(localStorage.getItem('otkSuspendAfterInactiveMinutes') || '30', 10);
+        scrollTimeout = setTimeout(() => {
+            consoleLog(`[Scroll] No scroll activity for ${suspendAfterInactiveMinutes} minutes, suspending background updates.`);
+            isSuspended = true;
+            stopBackgroundRefresh();
+            showSuspendedScreen();
+        }, suspendAfterInactiveMinutes * 60 * 1000);
     });
 
     consoleLog("Options Window setup complete with drag functionality.");
@@ -5965,7 +5937,7 @@ async function main() {
             updateDisplayedStatistics(); // This reads from localStorage and updates GUI
 
             // Restore viewer state
-            if (localStorage.getItem(VIEWER_OPEN_KEY) === 'true' && otkViewer && performance.navigation.type !== 1) {
+            if (localStorage.getItem(VIEWER_OPEN_KEY) === 'true' && otkViewer) {
                 const currentLayoutMain = localStorage.getItem('otkMessageLayoutStyle') || 'default';
                 if (currentLayoutMain === 'new_design') {
                     otkViewer.classList.add('otk-message-layout-newdesign');
