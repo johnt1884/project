@@ -732,36 +732,44 @@ requestAnimationFrame(() => {
             flex-grow: 1; /* Ensures it takes available space */
             display: flex;
             flex-direction: column;
-            align-items: center;
+            align-items: center; /* Center the statsWrapper block */
             justify-content: space-between;
-            color: white;
-            text-align: center;
             padding: 0 10px;
         `;
         centerInfoContainer.style.flexGrow = '1';
         consoleLog('[GUI Setup - Initial] centerInfoContainer.style.flexGrow explicitly set to 1.');
 
+        // Wrapper for title and stats to keep them left-aligned but centered as a block
+        const statsWrapper = document.createElement('div');
+        statsWrapper.id = 'otk-stats-wrapper';
+        statsWrapper.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start; /* Left-align title and stats */
+            width: fit-content; /* Only as wide as needed */
+            max-width: 250px; /* Prevent excessive width */
+        `;
+
         const otkThreadTitleDisplay = document.createElement('div');
         otkThreadTitleDisplay.id = 'otk-thread-title-display';
-        otkThreadTitleDisplay.textContent = 'Thread Tracker 2.7'; // Updated version
+        otkThreadTitleDisplay.textContent = 'Thread Tracker 2.7';
         otkThreadTitleDisplay.style.cssText = `
             font-weight: bold;
             font-size: 14px;
-            /* margin-bottom will be handled by titleContainer */
-            display: inline; /* To allow cog to sit next to it */
-            color: var(--otk-title-text-color); /* Apply specific color variable */
+            display: inline;
+            color: var(--otk-title-text-color);
         `;
 
         const cogIcon = document.createElement('span');
         cogIcon.id = 'otk-settings-cog';
-        cogIcon.innerHTML = '&#x2699;'; // Gear icon ⚙️
+        cogIcon.innerHTML = '⚙';
         cogIcon.style.cssText = `
             font-size: 16px;
             margin-left: 10px;
             cursor: pointer;
-            display: inline-block; /* Allows margin and proper alignment */
-            vertical-align: middle; /* Aligns cog with text better */
-            color: var(--otk-cog-icon-color); /* Apply cog icon color variable */
+            display: inline-block;
+            vertical-align: middle;
+            color: var(--otk-cog-icon-color);
         `;
         cogIcon.title = "Open Settings";
 
@@ -769,7 +777,7 @@ requestAnimationFrame(() => {
         titleContainer.style.cssText = `
             display: flex;
             align-items: center;
-            justify-content: center; /* Center title and cog */
+            justify-content: flex-start; /* Left-align title and cog */
             margin-bottom: 4px;
         `;
         titleContainer.appendChild(otkThreadTitleDisplay);
@@ -783,31 +791,56 @@ requestAnimationFrame(() => {
             flex-direction: column;
             align-items: flex-start;
             width: fit-content;
-            margin: 0 0 0 -20px;
+            min-width: 200px; /* Reserve space for (+n) */
         `;
 
         const threadsTrackedStat = document.createElement('div');
         threadsTrackedStat.id = 'otk-threads-tracked-stat';
-        threadsTrackedStat.style.display = 'flex';
+        threadsTrackedStat.style.cssText = `
+            display: flex;
+            align-items: center;
+            color: var(--otk-stats-text-color);
+            min-width: 200px; /* Prevent shifting from (+n) */
+            white-space: nowrap;
+        `;
 
         const totalMessagesStat = document.createElement('div');
         totalMessagesStat.id = 'otk-total-messages-stat';
+        totalMessagesStat.style.cssText = `
+            display: flex;
+            align-items: center;
+            color: var(--otk-stats-text-color);
+            min-width: 200px;
+            white-space: nowrap;
+        `;
 
         const localImagesStat = document.createElement('div');
         localImagesStat.id = 'otk-local-images-stat';
-        localImagesStat.style.display = 'flex';
+        localImagesStat.style.cssText = `
+            display: flex;
+            align-items: center;
+            color: var(--otk-stats-text-color);
+            min-width: 200px;
+            white-space: nowrap;
+        `;
 
         const localVideosStat = document.createElement('div');
         localVideosStat.id = 'otk-local-videos-stat';
-        localVideosStat.style.display = 'flex';
+        localVideosStat.style.cssText = `
+            display: flex;
+            align-items: center;
+            color: var(--otk-stats-text-color);
+            min-width: 200px;
+            white-space: nowrap;
+        `;
 
         otkStatsDisplay.appendChild(threadsTrackedStat);
         otkStatsDisplay.appendChild(totalMessagesStat);
         otkStatsDisplay.appendChild(localImagesStat);
         otkStatsDisplay.appendChild(localVideosStat);
-        // centerInfoContainer.appendChild(otkThreadTitleDisplay); // Replaced by titleContainer
-        centerInfoContainer.appendChild(titleContainer); // Add the container with title and cog
-        centerInfoContainer.appendChild(otkStatsDisplay);
+        statsWrapper.appendChild(titleContainer);
+        statsWrapper.appendChild(otkStatsDisplay);
+        centerInfoContainer.appendChild(statsWrapper);
         otkGui.appendChild(centerInfoContainer);
 
         // Button container (right)
@@ -878,12 +911,11 @@ requestAnimationFrame(() => {
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-                justify-content: space-between;
+                justify-content: center; /* Center the new parent container vertically */
                 color: white;
                 text-align: center;
                 padding: 0 10px;
             `;
-            centerInfoContainer.style.flexGrow = '1';
             consoleLog('[GUI Setup - Reconstruction] centerInfoContainer.style.flexGrow explicitly set to 1.');
 
             const otkThreadTitleDisplay = document.createElement('div');
@@ -904,6 +936,13 @@ requestAnimationFrame(() => {
             // Note: Event listener for cog a V2 feature, or needs to be re-attached if GUI is rebuilt this way.
             // For now, just ensuring structure. If setupOptionsWindow is called after this, it might re-bind.
 
+            const titleAndStatsContainer = document.createElement('div');
+            titleAndStatsContainer.style.cssText = `
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            `;
+
             const titleContainer = document.createElement('div');
             titleContainer.style.cssText = `
                 display: flex; align-items: center; justify-content: center; margin-bottom: 4px;
@@ -917,46 +956,34 @@ requestAnimationFrame(() => {
                 font-size: 11px;
                 display: flex;
                 flex-direction: column;
-                align-items: center; /* This centers the span blocks */
+                align-items: flex-start; /* Left-align the stats */
                 width: fit-content; /* Make block only as wide as its content */
-                margin: 0 auto; /* Center the block itself if parent is wider */
             `;
 
-            const threadsTrackedStat = document.createElement('span');
+            const threadsTrackedStat = document.createElement('div');
             threadsTrackedStat.id = 'otk-threads-tracked-stat';
-            threadsTrackedStat.textContent = 'Live Threads: 0';
-            threadsTrackedStat.style.textAlign = 'left';
-            threadsTrackedStat.style.minWidth = '150px';
-            threadsTrackedStat.style.color = 'var(--otk-stats-text-color)';
+            threadsTrackedStat.style.display = 'flex';
 
-            const totalMessagesStat = document.createElement('span');
+            const totalMessagesStat = document.createElement('div');
             totalMessagesStat.id = 'otk-total-messages-stat';
-            totalMessagesStat.textContent = 'Total Messages: 0';
-            totalMessagesStat.style.textAlign = 'left';
-            totalMessagesStat.style.minWidth = '150px';
-            totalMessagesStat.style.color = 'var(--otk-stats-text-color)';
+            totalMessagesStat.style.display = 'flex';
 
-            const localImagesStat = document.createElement('span');
+            const localImagesStat = document.createElement('div');
             localImagesStat.id = 'otk-local-images-stat';
-            localImagesStat.textContent = 'Local Images: 0'; // Added for consistency
-            localImagesStat.style.textAlign = 'left';
-            localImagesStat.style.minWidth = '150px';
-            localImagesStat.style.color = 'var(--otk-stats-text-color)';
+            localImagesStat.style.display = 'flex';
 
-            const localVideosStat = document.createElement('span');
+            const localVideosStat = document.createElement('div');
             localVideosStat.id = 'otk-local-videos-stat';
-            localVideosStat.textContent = 'Local Videos: 0'; // Added for consistency
-            localVideosStat.style.textAlign = 'left';
-            localVideosStat.style.minWidth = '150px';
-            localVideosStat.style.color = 'var(--otk-stats-text-color)';
+            localVideosStat.style.display = 'flex';
 
             otkStatsDisplay.appendChild(threadsTrackedStat);
             otkStatsDisplay.appendChild(totalMessagesStat);
-            otkStatsDisplay.appendChild(localImagesStat); // Added for consistency
-            otkStatsDisplay.appendChild(localVideosStat); // Added for consistency
-            // centerInfoContainer.appendChild(otkThreadTitleDisplay); // Replaced
-            centerInfoContainer.appendChild(titleContainer); // Add new container
-            centerInfoContainer.appendChild(otkStatsDisplay);
+            otkStatsDisplay.appendChild(localImagesStat);
+            otkStatsDisplay.appendChild(localVideosStat);
+
+            titleAndStatsContainer.appendChild(titleContainer);
+            titleAndStatsContainer.appendChild(otkStatsDisplay);
+            centerInfoContainer.appendChild(titleAndStatsContainer);
 
 
             const existingButtonContainer = otkGui.querySelector('#otk-button-container');
@@ -2920,7 +2947,14 @@ function _populateAttachmentDivWithMedia(
             viewerActiveImageCount = uniqueImageViewerHashes.size;
             viewerActiveVideoCount = viewerTopLevelAttachedVideoHashes.size + viewerTopLevelEmbedIds.size;
             consoleLog(`[StatsDebug][appendNewMessagesToViewer] Viewer counts updated: Images=${viewerActiveImageCount}, Videos (top-level attached + top-level embed)=${viewerActiveVideoCount}`);
-            updateDisplayedStatistics();
+            // Pass the calculated new counts to updateDisplayedStatistics
+            const newCounts = {
+                isBackgroundUpdate: true,
+                newMessagesCount: newMessages.length,
+                newImagesCount: newMessages.filter(m => m.attachment && ['.jpg', '.jpeg', '.png', '.gif'].includes(m.attachment.ext.toLowerCase())).length,
+                newVideosCount: newMessages.filter(m => m.attachment && ['.webm', '.mp4'].includes(m.attachment.ext.toLowerCase())).length
+            };
+            updateDisplayedStatistics(newCounts);
             consoleLog("[appendNewMessagesToViewer] Stats updated.");
 
         }).catch(async err => { // Make async
@@ -3357,7 +3391,7 @@ function _populateAttachmentDivWithMedia(
 
             const resultsBg = await Promise.all(fetchPromisesBg);
 
-            let allNewMessages = [];
+            let newMessages = [];
             resultsBg.forEach(result => {
                 // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
                 if (result.status === 'fulfilled' && result) {
@@ -3389,7 +3423,7 @@ function _populateAttachmentDivWithMedia(
                                 newMessagesInThread.push(m);
                             }
                         });
-                        allNewMessages.push(...newMessagesInThread);
+                        newMessages.push(...newMessagesInThread);
                         updatedMessages.sort((a, b) => a.time - b.time);
                         messagesByThreadId[threadId] = updatedMessages;
                         if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
@@ -3422,14 +3456,14 @@ function _populateAttachmentDivWithMedia(
             // Pass the calculated new counts to updateDisplayedStatistics
             const newCounts = {
                 isBackgroundUpdate: isBackground,
-                newMessagesCount: allNewMessages.length,
-                newImagesCount: allNewMessages.filter(m => m.attachment && ['.jpg', '.jpeg', '.png', '.gif'].includes(m.attachment.ext.toLowerCase())).length,
-                newVideosCount: allNewMessages.filter(m => m.attachment && ['.webm', '.mp4'].includes(m.attachment.ext.toLowerCase())).length
+                newMessagesCount: newMessages.length,
+                newImagesCount: newMessages.filter(m => m.attachment && ['.jpg', '.jpeg', '.png', '.gif'].includes(m.attachment.ext.toLowerCase())).length,
+                newVideosCount: newMessages.filter(m => m.attachment && ['.webm', '.mp4'].includes(m.attachment.ext.toLowerCase())).length
             };
             updateDisplayedStatistics(newCounts);
 
-            if (isBackground && otkViewer && otkViewer.style.display === 'block' && allNewMessages.length > 0) {
-                // appendNewMessagesToViewer(allNewMessages);
+            if (isBackground && otkViewer && otkViewer.style.display === 'block' && newMessages.length > 0) {
+                // appendNewMessagesToViewer(newMessages);
             }
 
             consoleLog('[BG] Background refresh complete.');
@@ -3565,7 +3599,15 @@ function _populateAttachmentDivWithMedia(
             updateLoadingProgress(95, "Finalizing data and updating display...");
             renderThreadList();
             window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
-            updateDisplayedStatistics();
+            localStorage.removeItem('otkNewMessagesCount');
+            localStorage.removeItem('otkNewImagesCount');
+            localStorage.removeItem('otkNewVideosCount');
+            updateDisplayedStatistics({
+                isBackgroundUpdate: false, // This is a manual refresh
+                newMessagesCount: totalNewMessagesThisRefresh,
+                newImagesCount: totalNewImagesThisRefresh,
+                newVideosCount: totalNewVideosThisRefresh
+            });
 
             // New logic for incremental append or full render
             const messagesContainer = document.getElementById('otk-messages-container'); // Still needed to check if viewer is open and has container
@@ -3678,6 +3720,9 @@ function _populateAttachmentDivWithMedia(
             isManualRefreshInProgress = false;
             consoleLog('[Clear] Manual refresh flag reset.');
             renderThreadList(); // Update GUI bar with (now minimal) live threads
+            localStorage.removeItem('otkNewMessagesCount');
+            localStorage.removeItem('otkNewImagesCount');
+            localStorage.removeItem('otkNewVideosCount');
             updateDisplayedStatistics(); // Update stats based on cleared and re-fetched data
         }
     }
@@ -3756,11 +3801,11 @@ function _populateAttachmentDivWithMedia(
                 otkViewer.classList.remove('otk-message-layout-newdesign');
             }
             // renderMessagesInViewer will calculate and set viewerActive counts and then call updateDisplayedStatistics
-            renderMessagesInViewer({isToggleOpen: true}); // Pass flag
+            // renderMessagesInViewer({isToggleOpen: true}); // Pass flag
         }
     }
 
-    function updateDisplayedStatistics(catalogThreadIds = [], options = {}) {
+    function updateDisplayedStatistics(options = {}) {
         const { isBackgroundUpdate = false, newMessagesCount = 0, newImagesCount = 0, newVideosCount = 0 } = options;
 
         const threadsTrackedElem = document.getElementById('otk-threads-tracked-stat');
@@ -3769,7 +3814,7 @@ function _populateAttachmentDivWithMedia(
         const localVideosElem = document.getElementById('otk-local-videos-stat');
 
         if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
-            const liveThreadsCount = catalogThreadIds.length;
+            const liveThreadsCount = activeThreads.length;
             let totalMessagesCount = 0;
             for (const threadId in messagesByThreadId) {
                 if (messagesByThreadId.hasOwnProperty(threadId)) {
@@ -3777,21 +3822,44 @@ function _populateAttachmentDivWithMedia(
                 }
             }
 
+            // Create a stable container for the base text and the new count indicator
+            const createStatLine = (baseText, newCount, storageKey) => {
+                const lineContainer = document.createElement('div');
+                lineContainer.style.display = 'flex';
+                lineContainer.style.justifyContent = 'flex-start'; // Align items to the left
+                lineContainer.style.width = '100%'; // Ensure container takes full width of its parent cell
+
+                const baseSpan = document.createElement('span');
+                baseSpan.textContent = baseText;
+
+                const newCountSpan = document.createElement('span');
+                newCountSpan.className = 'new-stat';
+                newCountSpan.style.color = 'var(--otk-background-updates-stats-text-color)';
+                newCountSpan.style.marginLeft = '5px'; // Space between base and new text
+
+                let newTotal = parseInt(localStorage.getItem(storageKey) || '0');
+                if (isBackgroundUpdate) {
+                    newTotal += newCount;
+                    localStorage.setItem(storageKey, newTotal);
+                }
+
+                if (newTotal > 0) {
+                    newCountSpan.textContent = `(+${newTotal} new)`;
+                } else {
+                    newCountSpan.textContent = ''; // Clear if no new items
+                }
+
+                lineContainer.appendChild(baseSpan);
+                lineContainer.appendChild(newCountSpan);
+                return lineContainer;
+            };
+
             const paddingLength = 4;
-            threadsTrackedElem.innerHTML = `<span>- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}</span>`;
+            threadsTrackedElem.innerHTML = ''; // Clear previous content
+            threadsTrackedElem.appendChild(createStatLine(`- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}`, 0, 'otkDummyKeyForThreads')); // No "new" count for threads
 
-            const baseMessagesText = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
-            let newMessagesTotal = parseInt(localStorage.getItem('otkNewMessagesCount') || '0');
-            if(isBackgroundUpdate) {
-                newMessagesTotal += newMessagesCount;
-                localStorage.setItem('otkNewMessagesCount', newMessagesTotal);
-            }
-
-            let newMessagesText = '';
-            if (newMessagesTotal > 0) {
-                newMessagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newMessagesTotal} new)</span>`;
-            }
-            totalMessagesElem.innerHTML = `<span>${baseMessagesText}</span>${newMessagesText}`;
+            totalMessagesElem.innerHTML = '';
+            totalMessagesElem.appendChild(createStatLine(`- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`, newMessagesCount, 'otkNewMessagesCount'));
 
             const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
             const videoCountFromStorage = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
@@ -3799,30 +3867,12 @@ function _populateAttachmentDivWithMedia(
             const imageCountToDisplay = viewerActiveImageCount !== null ? viewerActiveImageCount : imageCountFromStorage;
             const videoCountToDisplay = viewerActiveVideoCount !== null ? viewerActiveVideoCount : videoCountFromStorage;
 
-            const baseImagesText = `- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`;
-            let newImagesTotal = parseInt(localStorage.getItem('otkNewImagesCount') || '0');
-            if (isBackgroundUpdate) {
-                newImagesTotal += newImagesCount;
-                localStorage.setItem('otkNewImagesCount', newImagesTotal);
-            }
-            let newImagesText = '';
-            if (newImagesTotal > 0) {
-                newImagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newImagesTotal} new)</span>`;
-            }
-            localImagesElem.innerHTML = `<span>${baseImagesText}</span>${newImagesText}`;
+            localImagesElem.innerHTML = '';
+            localImagesElem.appendChild(createStatLine(`- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`, newImagesCount, 'otkNewImagesCount'));
 
+            localVideosElem.innerHTML = '';
+            localVideosElem.appendChild(createStatLine(`- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`, newVideosCount, 'otkNewVideosCount'));
 
-            const baseVideosText = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
-            let newVideosTotal = parseInt(localStorage.getItem('otkNewVideosCount') || '0');
-            if (isBackgroundUpdate) {
-                newVideosTotal += newVideosCount;
-                localStorage.setItem('otkNewVideosCount', newVideosTotal);
-            }
-            let newVideosText = '';
-            if (newVideosTotal > 0) {
-                newVideosText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newVideosTotal} new)</span>`;
-            }
-            localVideosElem.innerHTML = `<span>${baseVideosText}</span>${newVideosText}`;
         } else {
             consoleWarn('One or more statistics elements not found in GUI. Threads, Messages, Images, or Videos.');
         }
@@ -5949,13 +5999,13 @@ async function main() {
                 consoleLog('Viewer state restored to open. Layout class applied. Rendering all messages.');
                 otkViewer.style.display = 'block';
                 document.body.style.overflow = 'hidden';
-                renderMessagesInViewer(); // Auto-populate with all messages
+                renderMessagesInViewer({isToggleOpen: true}); // Auto-populate with all messages
             }
 
 
             // Load initial data and render list (stats are already updated)
             renderThreadList();
-            // updateDisplayedStatistics(); // Already called after recalculate
+            updateDisplayedStatistics(); // Already called after recalculate
 
             // Start background refresh if not disabled
             if (localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) !== 'true') {
