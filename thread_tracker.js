@@ -704,6 +704,8 @@ requestAnimationFrame(() => {
             display: flex;
             align-items: stretch;
             user-select: none;
+            position: relative;
+            justify-content: space-between;
         `;
         otkGuiWrapper.appendChild(otkGui);
         document.body.style.paddingTop = '86px';
@@ -729,15 +731,17 @@ requestAnimationFrame(() => {
         const centerInfoContainer = document.createElement('div');
         centerInfoContainer.id = 'otk-center-info-container';
         centerInfoContainer.style.cssText = `
-            flex-grow: 1; /* Ensures it takes available space */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             display: flex;
             flex-direction: column;
-            align-items: center; /* Center the statsWrapper block */
-            justify-content: space-between;
+            align-items: center;
+            justify-content: center;
             padding: 0 10px;
+            pointer-events: none;
         `;
-        centerInfoContainer.style.flexGrow = '1';
-        consoleLog('[GUI Setup - Initial] centerInfoContainer.style.flexGrow explicitly set to 1.');
 
         // Wrapper for title and stats to keep them left-aligned but centered as a block
         const statsWrapper = document.createElement('div');
@@ -748,6 +752,7 @@ requestAnimationFrame(() => {
             align-items: flex-start; /* Left-align title and stats */
             width: fit-content; /* Only as wide as needed */
             max-width: 250px; /* Prevent excessive width */
+            pointer-events: auto;
         `;
 
         const otkThreadTitleDisplay = document.createElement('div');
@@ -3801,7 +3806,7 @@ function _populateAttachmentDivWithMedia(
                 otkViewer.classList.remove('otk-message-layout-newdesign');
             }
             // renderMessagesInViewer will calculate and set viewerActive counts and then call updateDisplayedStatistics
-            // renderMessagesInViewer({isToggleOpen: true}); // Pass flag
+            renderMessagesInViewer({isToggleOpen: true}); // Pass flag
         }
     }
 
