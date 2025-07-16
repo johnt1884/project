@@ -1483,6 +1483,7 @@ requestAnimationFrame(() => {
         otkViewer.innerHTML = ''; // Clear previous content
 
         const allMessages = getAllMessagesSorted().filter(m => renderedMessageIdsInViewer.has(m.id));
+        otkViewer.textContent = '';
         if (!allMessages || allMessages.length === 0) {
             otkViewer.textContent = 'No messages found to display.'; // User-friendly message
             consoleWarn(`No messages to render in viewer.`);
@@ -1623,16 +1624,12 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             }
 
             if (!anchorScrolled) {
-                if (options.isToggleOpen && lastViewerScrollTop > 0) {
-                    messagesContainer.scrollTop = lastViewerScrollTop;
-                    consoleLog(`Restored scroll position to: ${lastViewerScrollTop}`);
-                } else {
-                    const scrollToBottom = () => {
-                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                        consoleLog('Attempted to scroll messages to bottom. Position:', messagesContainer.scrollTop, 'Height:', messagesContainer.scrollHeight);
-                    };
-                    setTimeout(scrollToBottom, 100);
-                    setTimeout(scrollToBottom, 500);
+                const newestMessage = allMessages.sort((a, b) => b.time - a.time)[0];
+                if (newestMessage) {
+                    const newestMessageElement = document.querySelector(`[data-message-id="${newestMessage.id}"]`);
+                    if (newestMessageElement) {
+                        newestMessageElement.scrollIntoView({ behavior: 'auto', block: 'start' });
+                    }
                 }
             }
 
@@ -1785,19 +1782,15 @@ function _populateAttachmentDivWithMedia(
 
     } else if (extLower.endsWith('webm') || extLower.endsWith('mp4')) {
         // --- VIDEO LOGIC ---
-        const setupVideo = (src) => {
-            const videoElement = document.createElement('video');
-            if (!message.attachment.tim || !message.attachment.ext) {
-                consoleError(`Video attachment for message ${message.id} is missing 'tim' or 'ext'. Cannot construct video src.`);
-                // Potentially don't append, or append a placeholder? For now, it will have no src.
-            } else {
-                videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`; // Ensure ext has a dot
-            }
-            videoElement.controls = true;
-            videoElement.style.maxWidth = '100%';
-            videoElement.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '300px';
-            videoElement.style.borderRadius = '3px';
-            videoElement.style.display = 'block';
+        const videoElement = document.createElement('video');
+        videoElement.controls = true;
+        videoElement.style.maxWidth = '100%';
+        videoElement.style.maxHeight = (layoutStyle === 'new_design' || isTopLevelMessage) ? '400px' : '300px';
+        videoElement.style.borderRadius = '3px';
+        videoElement.style.display = 'block';
+
+        const setVideoSource = (src) => {
+            videoElement.src = src;
             attachmentDiv.appendChild(videoElement);
             if (message.attachment.filehash_db_key && isTopLevelMessage) {
                 viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
@@ -1812,20 +1805,20 @@ function _populateAttachmentDivWithMedia(
                 request.onsuccess = (event) => {
                     const storedItem = event.target.result;
                     if (storedItem && storedItem.blob) {
-                        setupVideo(URL.createObjectURL(storedItem.blob));
+                        setVideoSource(URL.createObjectURL(storedItem.blob));
                     } else {
-                        setupVideo(null);
+                        setVideoSource(`https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`);
                     }
                     resolveMedia();
                 };
                 request.onerror = (event) => {
                     consoleError(`Error fetching video ${filehash} from IDB: ${event.target.error}`);
-                    setupVideo(null);
+                    setVideoSource(`https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`);
                     resolveMedia();
                 };
             }));
         } else {
-            setupVideo(null);
+            setVideoSource(`https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`);
         }
     }
 }
@@ -2908,6 +2901,10 @@ function _populateAttachmentDivWithMedia(
             return;
         }
 
+        if (messagesContainer.textContent === 'No messages found to display.') {
+            messagesContainer.textContent = '';
+        }
+
         const newContentDiv = document.createElement('div');
 
         const separatorDiv = document.createElement('div');
@@ -3692,7 +3689,7 @@ function _populateAttachmentDivWithMedia(
             }
 
             consoleLog('[Clear] Calling refreshThreadsAndMessages to repopulate data...');
-            await refreshThreadsAndMessages();
+            await refreshThreadsAndMessages({ skipViewerUpdate: true });
 
             for (const threadId in messagesByThreadId) {
                 const messages = messagesByThreadId[threadId] || [];
