@@ -369,59 +369,22 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         }
 
         if (quotedMessageObject) {
-            const filterRules = JSON.parse(localStorage.getItem('otkFilterRules') || '[]');
-            const parsedRules = filterRules.map(parseFilterRule);
-            if (isMessageFiltered(quotedMessageObject, parsedRules)) {
-                const collapsedView = document.createElement('div');
-                const header = document.createElement('span');
-                header.textContent = `>>${quotedMessageObject.id} `;
-
-                const blockIcon = document.createElement('span');
-                blockIcon.innerHTML = '&#128711;';
-                header.appendChild(blockIcon);
-
-                const plusIcon = document.createElement('span');
-                plusIcon.innerHTML = ' [+]';
-                plusIcon.style.cursor = 'pointer';
-                header.appendChild(plusIcon);
-
-                collapsedView.appendChild(header);
-
-                plusIcon.addEventListener('click', () => {
-                    const fullQuoteElement = createMessageElementDOM(
-                        quotedMessageObject,
-                        [],
-                        uniqueImageViewerHashes,
-                        quotedMessageObject.board || boardForLink,
-                        false,
-                        currentDepth + 1,
-                        null,
-                        parentMessageId
-                    );
-                    if (fullQuoteElement) {
-                        collapsedView.replaceWith(fullQuoteElement);
-                    }
-                });
-                textElement.appendChild(collapsedView);
-
-            } else {
-                const quotedElement = createMessageElementDOM(
-                    quotedMessageObject,
-                                    mediaLoadPromises, // Pass down the array for mediaLoadPromises for quotes
-                    uniqueImageViewerHashes,
-                    // uniqueVideoViewerHashes, // Removed
-                    quotedMessageObject.board || boardForLink,
-                    false, // isTopLevelMessage = false for quotes
-                    currentDepth + 1,
-                    null, // threadColor is not used for quoted message accents
-                    parentMessageId // Pass the PARENT message's ID for the quote
-                );
-                if (quotedElement) {
-                    if (currentDepth >= MAX_QUOTE_DEPTH - 1 && !quotedMessageObject.text) {
-                        return;
-                    }
-                    textElement.appendChild(quotedElement);
+            const quotedElement = createMessageElementDOM(
+                quotedMessageObject,
+                                mediaLoadPromises, // Pass down the array for mediaLoadPromises for quotes
+                uniqueImageViewerHashes,
+                // uniqueVideoViewerHashes, // Removed
+                quotedMessageObject.board || boardForLink,
+                false, // isTopLevelMessage = false for quotes
+                currentDepth + 1,
+                null, // threadColor is not used for quoted message accents
+                parentMessageId // Pass the PARENT message's ID for the quote
+            );
+            if (quotedElement) {
+                if (currentDepth >= MAX_QUOTE_DEPTH - 1 && !quotedMessageObject.text) {
+                    return;
                 }
+                textElement.appendChild(quotedElement);
             }
         } else {
             const notFoundSpan = document.createElement('span');
@@ -1857,6 +1820,7 @@ function animateStatIncrease(statEl, plusNEl, from, to) {
 
         for (let i = 0; i < totalMessagesToRender; i++) {
             const message = allMessages[i];
+
             renderedMessageIdsInViewer.add(message.id);
 
             const boardForLink = message.board || 'b';
@@ -2423,66 +2387,53 @@ function _populateAttachmentDivWithMedia(
     }
 }
 
+function wrapInCollapsibleContainer(elementsToWrap) {
+    const container = document.createElement('div');
+    container.className = 'otk-collapsible-container';
+
+    const placeholder = document.createElement('div');
+    placeholder.className = 'otk-collapsible-placeholder';
+    placeholder.innerHTML = '<span style="margin-right: 5px;">[+]</span>Blocked Content';
+    placeholder.style.cursor = 'pointer';
+    placeholder.style.color = 'var(--otk-msg-depth0-header-text-color)';
+    placeholder.style.fontSize = '12px';
+    placeholder.style.fontStyle = 'italic';
+    placeholder.style.padding = '5px 0';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'otk-collapsible-content';
+    contentDiv.style.display = 'none';
+
+    elementsToWrap.forEach(el => {
+        if (el) {
+            contentDiv.appendChild(el);
+        }
+    });
+
+    placeholder.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isHidden = contentDiv.style.display === 'none';
+        contentDiv.style.display = isHidden ? 'block' : 'none';
+        placeholder.querySelector('span').textContent = isHidden ? '[-]' : '[+]';
+    });
+
+    container.appendChild(placeholder);
+    container.appendChild(contentDiv);
+
+    return container;
+}
+
     // Signature now includes parentMessageId and ancestors
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId = null, ancestors = new Set()) {
         const filterRules = JSON.parse(localStorage.getItem('otkFilterRules') || '[]');
         const parsedRules = filterRules.map(parseFilterRule);
         const isFiltered = isMessageFiltered(message, parsedRules);
 
-        if (isTopLevelMessage && isFiltered) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'otk-message-container-main';
-            messageDiv.setAttribute('data-message-id', message.id);
-
-            const messageHeader = document.createElement('div');
-            // Simplified header for filtered messages
-            messageHeader.style.cssText = `padding: 5px; border-bottom: 1px solid #555; display: flex; align-items: center;`;
-
-            const headerText = document.createElement('span');
-            headerText.textContent = `Message ${message.id} is filtered. `;
-            messageHeader.appendChild(headerText);
-
-            const redBlockIcon = document.createElement('span');
-            redBlockIcon.innerHTML = '&#128711;';
-            redBlockIcon.style.color = 'red';
-            redBlockIcon.style.cursor = 'pointer';
-            redBlockIcon.style.marginLeft = '10px';
-            redBlockIcon.addEventListener('click', () => {
-                document.getElementById('otk-filter-btn').click();
-                renderFilterList();
-            });
-            messageHeader.appendChild(redBlockIcon);
-
-            const plusIcon = document.createElement('span');
-            plusIcon.innerHTML = '[+]';
-            plusIcon.style.cursor = 'pointer';
-            plusIcon.style.marginLeft = '5px';
-            messageHeader.appendChild(plusIcon);
-
-            messageDiv.appendChild(messageHeader);
-
-            const contentDiv = document.createElement('div');
-            contentDiv.style.padding = '10px';
-            messageDiv.appendChild(contentDiv);
-
-            // Render replies (quotes)
-            if (message.text) {
-                const lines = message.text.split('\n');
-                lines.forEach(line => {
-                    const quoteRegex = /^>>(\d+)/;
-                    if (line.match(quoteRegex)) {
-                        appendTextOrQuoteSegment(contentDiv, line, quoteRegex, 0, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
-                    }
-                });
+        if (isFiltered) {
+            if (currentDepth === 0 && (!message.text || !message.text.includes('>>'))) {
+                consoleLog(`[Filter] Removing filtered top-level message ${message.id} because it has no quotes.`);
+                return null;
             }
-
-            plusIcon.addEventListener('click', () => {
-                // Restore the filtered content
-                const fullContent = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, false, 0, threadColor, parentMessageId, ancestors);
-                messageDiv.replaceWith(fullContent);
-            }, { once: true });
-
-            return messageDiv;
         }
 
         const layoutStyle = localStorage.getItem('otkMessageLayoutStyle') || 'default';
@@ -2696,6 +2647,9 @@ function _populateAttachmentDivWithMedia(
             const messageHeader = document.createElement('div');
             messageHeader.className = 'otk-header-div';
             messageHeader.style.justifyContent = 'flex-start'; // Override CSS for left alignment
+            if (isFiltered) {
+                messageHeader.style.textDecoration = 'line-through';
+            }
 
             const timestampParts = formatTimestampForHeader(message.time);
             const headerContent = document.createElement('span'); // Use a single span for all content
@@ -2734,15 +2688,21 @@ function _populateAttachmentDivWithMedia(
 
             const blockIcon = document.createElement('span');
             blockIcon.innerHTML = '&#128711;'; // Block icon
-            blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer; visibility: hidden;';
-            headerContent.appendChild(blockIcon);
+            blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer;';
 
-            messageHeader.addEventListener('mouseenter', () => {
-                blockIcon.style.visibility = 'visible';
-            });
-            messageHeader.addEventListener('mouseleave', () => {
+            if (isFiltered) {
+                blockIcon.style.color = 'red';
+                blockIcon.title = 'This message is blocked by your filters.';
+            } else {
                 blockIcon.style.visibility = 'hidden';
-            });
+                messageHeader.addEventListener('mouseenter', () => {
+                    blockIcon.style.visibility = 'visible';
+                });
+                messageHeader.addEventListener('mouseleave', () => {
+                    blockIcon.style.visibility = 'hidden';
+                });
+            }
+            headerContent.appendChild(blockIcon);
 
             blockIcon.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -3052,50 +3012,40 @@ function _populateAttachmentDivWithMedia(
                 textElement.removeChild(textElement.firstChild);
             }
 
-            textWrapperDiv.appendChild(textElement);
-            postDiv.appendChild(textWrapperDiv);
-            messageDiv.appendChild(postDiv); // Append the postDiv after any block quotes
-
-            // Attachment handling (can be similar to original, appended to messageDiv)
+            let attachmentDiv = null;
             if (message.attachment && message.attachment.tim) {
-                const actualBoardForLink = boardForLink || message.board || 'b'; // Define actualBoardForLink here
-                const attachmentDiv = document.createElement('div');
-                attachmentDiv.style.marginTop = '10px'; // Standard margin for attachments
-                // ... (rest of attachment logic is complex and largely reusable, will integrate carefully)
-                // For now, let's assume the attachment logic from the 'else' block can be adapted and called here.
-                // This includes filename link, image/video display, IDB loading.
-                // Key: ensure it appends to this 'messageDiv' or 'textWrapperDiv' as appropriate for new layout.
-                // Example.html doesn't show attachments, so standard placement below text is fine.
+                const actualBoardForLink = boardForLink || message.board || 'b';
+                attachmentDiv = document.createElement('div');
+                attachmentDiv.style.marginTop = '10px';
 
                 if (shouldDisplayFilenames) {
                     const filenameLink = document.createElement('a');
                     filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
                     filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
                     filenameLink.target = "_blank";
-                    // Use shared link styling for attachments for consistency, or new design specific if needed
                     filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
                     attachmentDiv.appendChild(filenameLink);
                 }
 
-                // Call helper function to populate media
                 _populateAttachmentDivWithMedia(
-                    attachmentDiv,
-                    message,
-                    actualBoardForLink,
-                    mediaLoadPromises,
-                    uniqueImageViewerHashes,
-                    isTopLevelMessage,
-                    'new_design', // layoutStyle
-                    renderedFullSizeImageHashes, // Specific to New Design image handling
-                    viewerTopLevelAttachedVideoHashes,
-                    otkMediaDB
+                    attachmentDiv, message, actualBoardForLink, mediaLoadPromises,
+                    uniqueImageViewerHashes, isTopLevelMessage, 'new_design',
+                    renderedFullSizeImageHashes, viewerTopLevelAttachedVideoHashes, otkMediaDB
                 );
-
-                // Always append attachmentDiv if message.attachment.tim exists,
-                // trusting _populateAttachmentDivWithMedia to handle content.
-                // Removed: if (attachmentDiv.hasChildNodes())
-                textWrapperDiv.appendChild(attachmentDiv);
             }
+
+            if (isFiltered) {
+                const collapsibleContainer = wrapInCollapsibleContainer([textElement, attachmentDiv]);
+                textWrapperDiv.appendChild(collapsibleContainer);
+            } else {
+                textWrapperDiv.appendChild(textElement);
+                if (attachmentDiv) {
+                    textWrapperDiv.appendChild(attachmentDiv);
+                }
+            }
+
+            postDiv.appendChild(textWrapperDiv);
+            messageDiv.appendChild(postDiv); // Append the postDiv after any block quotes
 
             // Click listener for anchoring
             const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
@@ -3241,6 +3191,10 @@ function _populateAttachmentDivWithMedia(
             // if (shouldDisableUnderline) { // This logic will be handled after initial style.cssText set
             // }
 
+            if (isFiltered) {
+                messageHeader.style.textDecoration = 'line-through';
+            }
+
             messageHeader.style.cssText = `
                 font-size: 12px;
                 color: ${ isTopLevelMessage ? 'var(--otk-msg-depth0-header-text-color)' : (currentDepth === 1 ? 'var(--otk-msg-depth1-header-text-color)' : 'var(--otk-msg-depth2plus-header-text-color)') };
@@ -3314,15 +3268,21 @@ function _populateAttachmentDivWithMedia(
 
                 const blockIcon = document.createElement('span');
                 blockIcon.innerHTML = '&#128711;'; // Block icon
-                blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer; visibility: hidden;';
-                leftHeaderContent.appendChild(blockIcon);
+                blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer;';
 
-                messageHeader.addEventListener('mouseenter', () => {
-                    blockIcon.style.visibility = 'visible';
-                });
-                messageHeader.addEventListener('mouseleave', () => {
+                if (isFiltered) {
+                    blockIcon.style.color = 'red';
+                    blockIcon.title = 'This message is blocked by your filters.';
+                } else {
                     blockIcon.style.visibility = 'hidden';
-                });
+                    messageHeader.addEventListener('mouseenter', () => {
+                        blockIcon.style.visibility = 'visible';
+                    });
+                    messageHeader.addEventListener('mouseleave', () => {
+                        blockIcon.style.visibility = 'hidden';
+                    });
+                }
+                leftHeaderContent.appendChild(blockIcon);
 
                 blockIcon.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -3350,6 +3310,7 @@ function _populateAttachmentDivWithMedia(
                 messageHeader.appendChild(dateSpan);
             } else { // Simplified header for quoted messages
                 messageHeader.style.justifyContent = 'flex-start'; // Align ID to the start
+
                 const idSpan = document.createElement('span');
                 idSpan.textContent = ` >>${message.id}`; // Changed prefix for quoted messages
                 idSpan.style.cursor = 'pointer';
@@ -3376,15 +3337,21 @@ function _populateAttachmentDivWithMedia(
 
                 const blockIcon = document.createElement('span');
                 blockIcon.innerHTML = '&#128711;'; // Block icon
-                blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer; visibility: hidden;';
-                messageHeader.appendChild(blockIcon);
+                blockIcon.style.cssText = 'margin-left: 10px; cursor: pointer;';
 
-                messageHeader.addEventListener('mouseenter', () => {
-                    blockIcon.style.visibility = 'visible';
-                });
-                messageHeader.addEventListener('mouseleave', () => {
+                if (isFiltered) {
+                    blockIcon.style.color = 'red';
+                    blockIcon.title = 'This message is blocked by your filters.';
+                } else {
                     blockIcon.style.visibility = 'hidden';
-                });
+                    messageHeader.addEventListener('mouseenter', () => {
+                        blockIcon.style.visibility = 'visible';
+                    });
+                    messageHeader.addEventListener('mouseleave', () => {
+                        blockIcon.style.visibility = 'hidden';
+                    });
+                }
+                messageHeader.appendChild(blockIcon);
 
                 blockIcon.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -3696,8 +3663,6 @@ function _populateAttachmentDivWithMedia(
                 textElement.removeChild(textElement.firstChild);
             }
 
-            messageDiv.appendChild(textElement);
-
             // Click listener for anchoring
             const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
             messageDiv.id = persistentInstanceId;
@@ -3760,10 +3725,11 @@ function _populateAttachmentDivWithMedia(
             if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
-            // The erroneous duplicated block that was here has been removed.
+
+            let attachmentDiv = null;
             if (message.attachment && message.attachment.tim) {
-                const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
-                const attachmentDiv = document.createElement('div');
+                const actualBoardForLink = boardForLink || message.board || 'b';
+                attachmentDiv = document.createElement('div');
                 attachmentDiv.style.marginTop = '10px';
 
                 if (shouldDisplayFilenames) {
@@ -3775,24 +3741,21 @@ function _populateAttachmentDivWithMedia(
                     attachmentDiv.appendChild(filenameLink);
                 }
 
-                // Call helper function to populate media
                 _populateAttachmentDivWithMedia(
-                    attachmentDiv,
-                    message,
-                    actualBoardForLink,
-                    mediaLoadPromises,
-                    uniqueImageViewerHashes,
-                    isTopLevelMessage,
-                    'default', // layoutStyle
-                    renderedFullSizeImageHashes, // Pass for consistent image thumbnail logic
-                    viewerTopLevelAttachedVideoHashes,
-                    otkMediaDB
+                    attachmentDiv, message, actualBoardForLink, mediaLoadPromises,
+                    uniqueImageViewerHashes, isTopLevelMessage, 'default',
+                    renderedFullSizeImageHashes, viewerTopLevelAttachedVideoHashes, otkMediaDB
                 );
+            }
 
-                // Always append attachmentDiv if message.attachment.tim exists,
-                // trusting _populateAttachmentDivWithMedia to handle content.
-                // Removed: if (attachmentDiv.hasChildNodes())
-                messageDiv.appendChild(attachmentDiv);
+            if (isFiltered) {
+                const collapsibleContainer = wrapInCollapsibleContainer([textElement, attachmentDiv]);
+                messageDiv.appendChild(collapsibleContainer);
+            } else {
+                messageDiv.appendChild(textElement);
+                if (attachmentDiv) {
+                    messageDiv.appendChild(attachmentDiv);
+                }
             }
             return messageDiv;
         } // End of else (default layout)
@@ -8016,6 +7979,78 @@ function setupFilterWindow() {
         color: var(--otk-options-text-color);
     `;
 
+    const titleBar = document.createElement('div');
+    titleBar.style.cssText = `
+        padding: 8px 12px;
+        background-color: #383838;
+        color: #f0f0f0;
+        font-weight: bold;
+        cursor: move;
+        border-bottom: 1px solid #444;
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    `;
+    titleBar.textContent = 'Filter Settings';
+
+    const closeButton = document.createElement('span');
+    closeButton.innerHTML = '&#x2715;';
+    closeButton.style.cssText = 'cursor: pointer; font-size: 16px;';
+    closeButton.addEventListener('click', () => {
+        filterWindow.style.display = 'none';
+    });
+
+    titleBar.appendChild(closeButton);
+    filterWindow.appendChild(titleBar);
+
+    let isDragging = false;
+    let offsetX, offsetY;
+
+    titleBar.addEventListener('mousedown', (e) => {
+        if (e.target === closeButton) return;
+        isDragging = true;
+        offsetX = e.clientX - filterWindow.offsetLeft;
+        offsetY = e.clientY - filterWindow.offsetTop;
+        titleBar.style.userSelect = 'none';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            filterWindow.style.left = `${e.clientX - offsetX}px`;
+            filterWindow.style.top = `${e.clientY - offsetY}px`;
+        }
+    });
+
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        titleBar.style.userSelect = '';
+        document.body.style.userSelect = '';
+    });
+
+    const mainContent = document.createElement('div');
+    mainContent.style.cssText = 'display: flex; flex-grow: 1;';
+    filterWindow.appendChild(mainContent);
+
+    const leftMenu = document.createElement('div');
+    leftMenu.id = 'otk-filter-menu';
+    leftMenu.style.cssText = `
+        width: 120px;
+        padding: 10px;
+        border-right: 1px solid #444;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    `;
+    mainContent.appendChild(leftMenu);
+
+    const rightContent = document.createElement('div');
+    rightContent.id = 'otk-filter-content';
+    rightContent.style.cssText = 'padding: 10px; flex-grow: 1; display: flex; flex-direction: column;';
+    mainContent.appendChild(rightContent);
+
     // ... (rest of the setupFilterWindow code remains unchanged, including the titleBar, closeButton, mainContent, leftMenu, rightContent, dragging logic, etc.)
 
     const filterListBtn = createTrackerButton('Filter List');
@@ -8029,103 +8064,6 @@ function setupFilterWindow() {
     document.body.appendChild(filterWindow);
     consoleLog("Filter Window setup complete.");
 }
-    function setupFilterWindow() {
-        consoleLog("Setting up Filter Window...");
-
-        if (document.getElementById('otk-filter-window')) {
-            consoleLog("Filter window already exists.");
-            return;
-        }
-
-        const filterWindow = document.createElement('div');
-        filterWindow.id = 'otk-filter-window';
-        filterWindow.style.cssText = `
-            position: fixed;
-            top: 120px;
-            left: 120px;
-            width: 600px;
-            height: 400px;
-            background-color: #2c2c2c;
-            border: 1px solid #444;
-            border-radius: 5px;
-            z-index: 10001;
-            display: none;
-            flex-direction: column;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-            color: var(--otk-options-text-color);
-        `;
-
-        const titleBar = document.createElement('div');
-        titleBar.style.cssText = `
-            padding: 8px 12px;
-            background-color: #383838;
-            color: #f0f0f0;
-            font-weight: bold;
-            cursor: move;
-            border-bottom: 1px solid #444;
-            border-top-left-radius: 5px;
-            border-top-right-radius: 5px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        `;
-        titleBar.textContent = 'Filter Settings';
-
-        const closeButton = document.createElement('span');
-        closeButton.innerHTML = '&#x2715;';
-        closeButton.style.cssText = 'cursor: pointer; font-size: 16px;';
-        closeButton.addEventListener('click', () => {
-            filterWindow.style.display = 'none';
-        });
-
-        titleBar.appendChild(closeButton);
-        filterWindow.appendChild(titleBar);
-
-        let isDragging = false;
-        let offsetX, offsetY;
-
-        titleBar.addEventListener('mousedown', (e) => {
-            if (e.target === closeButton) return;
-            isDragging = true;
-            offsetX = e.clientX - filterWindow.offsetLeft;
-            offsetY = e.clientY - filterWindow.offsetTop;
-            titleBar.style.userSelect = 'none';
-            document.body.style.userSelect = 'none';
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            if (isDragging) {
-                filterWindow.style.left = `${e.clientX - offsetX}px`;
-                filterWindow.style.top = `${e.clientY - offsetY}px`;
-            }
-        });
-
-        document.addEventListener('mouseup', () => {
-            isDragging = false;
-            titleBar.style.userSelect = '';
-            document.body.style.userSelect = '';
-        });
-
-        const mainContent = document.createElement('div');
-        mainContent.style.cssText = 'display: flex; flex-grow: 1;';
-        filterWindow.appendChild(mainContent);
-
-        const leftMenu = document.createElement('div');
-        leftMenu.id = 'otk-filter-menu';
-        leftMenu.style.cssText = `
-            width: 120px;
-            padding: 10px;
-            border-right: 1px solid #444;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        `;
-        mainContent.appendChild(leftMenu);
-
-        const rightContent = document.createElement('div');
-        rightContent.id = 'otk-filter-content';
-        rightContent.style.cssText = 'padding: 10px; flex-grow: 1; display: flex; flex-direction: column;';
-        mainContent.appendChild(rightContent);
 
 
 
