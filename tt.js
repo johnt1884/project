@@ -1323,21 +1323,29 @@ function isMessageFiltered(message, rules) {
             return false;
         }
 
-        const matchContent = rule.matchContent.toLowerCase();
+        const matchContent = rule.matchContent; // Keep case for JSON parsing
         if (!matchContent) return false;
 
         switch (rule.category) {
             case 'keyword':
-                return messageText.includes(matchContent);
+                return messageText.includes(matchContent.toLowerCase());
             case 'attachedMedia':
-                return messageMd5 === matchContent;
+                return messageMd5 === matchContent.toLowerCase().replace('md5:', '');
             case 'entireMessage':
-                return messageText.includes(matchContent);
+                try {
+                    const conditions = JSON.parse(matchContent);
+                    const textMatch = conditions.text ? messageText.includes(conditions.text.toLowerCase()) : true;
+                    const mediaHashInRule = conditions.media ? conditions.media.toLowerCase().replace('md5:', '') : null;
+                    const mediaMatch = mediaHashInRule ? messageMd5 === mediaHashInRule : true;
+                    return textMatch && mediaMatch;
+                } catch (e) {
+                    return messageText.includes(matchContent.toLowerCase());
+                }
             case 'embeddedLink':
                 const urlRegex = /(https?:\/\/[^\s]+)/g;
                 let urls;
-                while ((urls = urlRegex.exec(messageText)) !== null) {
-                    if (urls[0].toLowerCase().includes(matchContent)) {
+                while ((urls = urlRegex.exec(message.text || '')) !== null) { // Use original case text for this check
+                    if (urls[0].toLowerCase().includes(matchContent.toLowerCase())) {
                         return true;
                     }
                 }
@@ -1356,21 +1364,31 @@ function doesAnyRuleMatch(message, rules) {
 
     return rules.some(rule => {
         if (!rule.enabled) return false;
-        const matchContent = rule.matchContent.toLowerCase();
+        const matchContent = rule.matchContent;
         if (!matchContent) return false;
 
         switch (rule.category) {
             case 'keyword':
-                return messageText.includes(matchContent);
+                return messageText.includes(matchContent.toLowerCase());
             case 'attachedMedia':
-                return messageMd5 === matchContent;
+                return messageMd5 === matchContent.toLowerCase().replace('md5:', '');
             case 'entireMessage':
-                return messageText.includes(matchContent) || (messageMd5 === matchContent);
+                 try {
+                    const conditions = JSON.parse(matchContent);
+                    const textMatch = conditions.text ? messageText.includes(conditions.text.toLowerCase()) : false;
+                    const mediaHashInRule = conditions.media ? conditions.media.toLowerCase().replace('md5:', '') : null;
+                    const mediaMatch = mediaHashInRule ? messageMd5 === mediaHashInRule : false;
+                    return textMatch || mediaMatch;
+                } catch (e) {
+                    // Fallback for old plain text rules
+                    const matchContentLower = matchContent.toLowerCase();
+                    return messageText.includes(matchContentLower) || (messageMd5 === matchContentLower);
+                }
             case 'embeddedLink':
                 const urlRegex = /(https?:\/\/[^\s]+)/g;
                 let urls;
-                while ((urls = urlRegex.exec(messageText)) !== null) {
-                    if (urls[0].toLowerCase().includes(matchContent)) {
+                while ((urls = urlRegex.exec(message.text || '')) !== null) {
+                    if (urls[0].toLowerCase().includes(matchContent.toLowerCase())) {
                         return true;
                     }
                 }
@@ -1405,7 +1423,7 @@ function applyFiltersToMessageContent(message, rules) {
                 }
                 break;
             case 'attachedMedia':
-                if (modifiedMessage.attachment && modifiedMessage.attachment.filehash_db_key === matchContent) {
+                if (modifiedMessage.attachment && modifiedMessage.attachment.filehash_db_key === matchContent.replace('md5:', '')) {
                     if (rule.action === 'remove' || rule.action === 'replace') {
                         attachmentFiltered = true;
                     }
@@ -1424,18 +1442,38 @@ function applyFiltersToMessageContent(message, rules) {
                 }
                 break;
             case 'entireMessage':
-                 if (modifiedText.toLowerCase().includes(matchContentLower)) {
-                    if (rule.action === 'remove') {
-                        modifiedText = modifiedText.replace(new RegExp(matchContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), '');
-                    } else if (rule.action === 'replace') {
-                        modifiedText = modifiedText.replace(new RegExp(matchContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), rule.replaceContent);
+                try {
+                    const conditions = JSON.parse(matchContent);
+                    const textToMatch = conditions.text;
+                    const mediaToMatch = conditions.media ? conditions.media.replace('md5:', '') : null;
+
+                    const textMatches = textToMatch && modifiedText.toLowerCase().includes(textToMatch.toLowerCase());
+                    const mediaMatches = mediaToMatch && modifiedMessage.attachment && modifiedMessage.attachment.filehash_db_key === mediaToMatch;
+
+                    if (textMatches && mediaMatches) { // AND logic for applying filter
+                        if (rule.action === 'remove') {
+                            modifiedText = modifiedText.replace(new RegExp(textToMatch.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), '');
+                            attachmentFiltered = true;
+                        } else if (rule.action === 'replace') {
+                            modifiedText = modifiedText.replace(new RegExp(textToMatch.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), rule.replaceContent);
+                            attachmentFiltered = true; // Also remove/replace attachment
+                        }
                     }
-                 }
-                 if (modifiedMessage.attachment && modifiedMessage.attachment.filehash_db_key === matchContent) {
-                    if (rule.action === 'remove' || rule.action === 'replace') {
-                        attachmentFiltered = true;
+                } catch (e) {
+                    // Fallback for old plain text rules
+                    if (modifiedText.toLowerCase().includes(matchContentLower)) {
+                        if (rule.action === 'remove') {
+                            modifiedText = modifiedText.replace(new RegExp(matchContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), '');
+                        } else if (rule.action === 'replace') {
+                            modifiedText = modifiedText.replace(new RegExp(matchContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), rule.replaceContent);
+                        }
                     }
-                 }
+                    if (modifiedMessage.attachment && modifiedMessage.attachment.filehash_db_key === matchContentLower) {
+                        if (rule.action === 'remove' || rule.action === 'replace') {
+                            attachmentFiltered = true;
+                        }
+                    }
+                }
                 break;
         }
     }
@@ -3029,20 +3067,44 @@ function wrapInCollapsibleContainer(elementsToWrap) {
 
                 blockIcon.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    let rule = '';
-                    if (message.text) {
-                        const cleanedText = message.text.replace(/>>\d+(\s\(You\))?/g, '').trim();
-                        if (cleanedText) {
-                            rule += `"${cleanedText}"`;
+
+                    const hasText = message.text && message.text.replace(/>>\d+(\s\(You\))?/g, '').trim().length > 0;
+                    const hasAttachment = message.attachment && message.attachment.filehash_db_key;
+
+                    const newRule = {
+                        id: Date.now(),
+                        action: 'filterOut',
+                        enabled: true,
+                        category: 'keyword', // default
+                        matchContent: '',
+                        replaceContent: ''
+                    };
+
+                    if (hasText && hasAttachment) {
+                        newRule.category = 'entireMessage';
+                        try {
+                            newRule.matchContent = JSON.stringify({
+                                text: message.text.replace(/>>\d+(\s\(You\))?/g, '').trim(),
+                                media: `md5:${message.attachment.filehash_db_key}`
+                            }, null, 2);
+                        } catch (err) {
+                            consoleError("Failed to stringify composite filter", err);
+                            // Fallback to simpler filter if stringify fails
+                            newRule.category = 'attachedMedia';
+                            newRule.matchContent = `md5:${message.attachment.filehash_db_key}`;
                         }
+                    } else if (hasText) {
+                        newRule.category = 'keyword';
+                        newRule.matchContent = message.text.replace(/>>\d+(\s\(You\))?/g, '').trim();
+                    } else if (hasAttachment) {
+                        newRule.category = 'attachedMedia';
+                        newRule.matchContent = `md5:${message.attachment.filehash_db_key}`;
                     }
-                    if (message.attachment && message.attachment.filehash_db_key) {
-                        rule += ` md5:${message.attachment.filehash_db_key}`;
-                    }
+
                     const filterWindow = document.getElementById('otk-filter-window');
                     if (filterWindow) {
                         filterWindow.style.display = 'flex';
-                        renderNewFilterView(rule.trim());
+                        renderFilterEditorView(newRule);
                     }
                 });
 
@@ -3104,20 +3166,44 @@ function wrapInCollapsibleContainer(elementsToWrap) {
 
                 blockIcon.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    let rule = '';
-                    if (message.text) {
-                        const cleanedText = message.text.replace(/>>\d+(\s\(You\))?/g, '').trim();
-                        if (cleanedText) {
-                            rule += `"${cleanedText}"`;
+
+                    const hasText = message.text && message.text.replace(/>>\d+(\s\(You\))?/g, '').trim().length > 0;
+                    const hasAttachment = message.attachment && message.attachment.filehash_db_key;
+
+                    const newRule = {
+                        id: Date.now(),
+                        action: 'filterOut',
+                        enabled: true,
+                        category: 'keyword', // default
+                        matchContent: '',
+                        replaceContent: ''
+                    };
+
+                    if (hasText && hasAttachment) {
+                        newRule.category = 'entireMessage';
+                         try {
+                            newRule.matchContent = JSON.stringify({
+                                text: message.text.replace(/>>\d+(\s\(You\))?/g, '').trim(),
+                                media: `md5:${message.attachment.filehash_db_key}`
+                            }, null, 2);
+                        } catch (err) {
+                            consoleError("Failed to stringify composite filter", err);
+                            // Fallback to simpler filter if stringify fails
+                            newRule.category = 'attachedMedia';
+                            newRule.matchContent = `md5:${message.attachment.filehash_db_key}`;
                         }
+                    } else if (hasText) {
+                        newRule.category = 'keyword';
+                        newRule.matchContent = message.text.replace(/>>\d+(\s\(You\))?/g, '').trim();
+                    } else if (hasAttachment) {
+                        newRule.category = 'attachedMedia';
+                        newRule.matchContent = `md5:${message.attachment.filehash_db_key}`;
                     }
-                    if (message.attachment && message.attachment.filehash_db_key) {
-                        rule += ` md5:${message.attachment.filehash_db_key}`;
-                    }
+
                     const filterWindow = document.getElementById('otk-filter-window');
                     if (filterWindow) {
                         filterWindow.style.display = 'flex';
-                        renderNewFilterView(rule.trim());
+                        renderFilterEditorView(newRule);
                     }
                 });
             }
@@ -7748,12 +7834,14 @@ function applyThemeSettings(options = {}) {
     }
 
 function renderFilterEditorView(ruleToEdit = null) {
-        const rightContent = document.getElementById('otk-filter-content');
-        if (!rightContent) return;
+    const rightContent = document.getElementById('otk-filter-content');
+    if (!rightContent) return;
 
     rightContent.innerHTML = ''; // Clear previous content
 
-    const isEditing = ruleToEdit !== null;
+    const allRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
+    const isEditing = ruleToEdit ? allRules.some(r => r.id === ruleToEdit.id) : false;
+
     const rule = ruleToEdit || {
         id: Date.now(),
         category: 'keyword',
@@ -7764,7 +7852,7 @@ function renderFilterEditorView(ruleToEdit = null) {
     };
 
     const form = document.createElement('div');
-    form.style.cssText = 'display: flex; flex-direction: column; gap: 10px;';
+    form.style.cssText = 'display: flex; flex-direction: column; gap: 10px; height: 100%;';
 
     // Helper to create a labeled row
     const createRow = (labelText, ...elements) => {
@@ -7817,7 +7905,7 @@ function renderFilterEditorView(ruleToEdit = null) {
     // Match Content Input
     const matchContentInput = document.createElement('textarea');
     matchContentInput.placeholder = 'Content to match...';
-    matchContentInput.style.cssText = 'width: 100%; height: 60px;';
+    matchContentInput.style.cssText = 'flex-grow: 1; width: 100%; box-sizing: border-box; resize: vertical;';
     matchContentInput.value = rule.matchContent;
     form.appendChild(createRow('Match Content:', matchContentInput));
 
@@ -7825,7 +7913,7 @@ function renderFilterEditorView(ruleToEdit = null) {
     const replaceContentRow = createRow('Replace With:', document.createElement('textarea'));
     const replaceContentInput = replaceContentRow.querySelector('textarea');
     replaceContentInput.placeholder = 'Replacement content...';
-    replaceContentInput.style.cssText = 'width: 100%; height: 60px;';
+    replaceContentInput.style.cssText = 'flex-grow: 1; width: 100%; box-sizing: border-box; resize: vertical; height: 60px;';
     replaceContentInput.value = rule.replaceContent;
     form.appendChild(replaceContentRow);
 
@@ -7835,13 +7923,8 @@ function renderFilterEditorView(ruleToEdit = null) {
     actionSelect.addEventListener('change', toggleReplaceRow);
     toggleReplaceRow(); // Initial check
 
-    // Buttons
-        const buttonContainer = document.createElement('div');
-    buttonContainer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px; margin-top: auto;';
-
-    const saveBtn = createTrackerButton(isEditing ? 'Save Changes' : 'Create Filter');
-    saveBtn.addEventListener('click', () => {
-        const newRule = {
+    const saveRuleLogic = () => {
+        const newRuleData = {
             id: rule.id,
             category: categorySelect.value,
             action: actionSelect.value,
@@ -7850,35 +7933,53 @@ function renderFilterEditorView(ruleToEdit = null) {
             enabled: rule.enabled
         };
 
-        if (!newRule.matchContent) {
+        if (!newRuleData.matchContent) {
             alert('Match Content cannot be empty.');
-            return;
+            return false;
         }
 
-        let rules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
-        if (isEditing) {
-            const index = rules.findIndex(r => r.id === rule.id);
-            if (index > -1) {
-                rules[index] = newRule;
-                }
+        let currentRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
+        const ruleIndex = currentRules.findIndex(r => r.id === rule.id);
+
+        if (ruleIndex > -1) {
+            currentRules[ruleIndex] = newRuleData;
         } else {
-            rules.push(newRule);
-            }
-        localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(rules));
-        renderFilterList(); // Go back to the list view
+            currentRules.push(newRuleData);
+        }
+        localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(currentRules));
+        return true;
+    };
+
+    // Buttons
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px; margin-top: auto;';
+
+    const saveBtn = createTrackerButton(isEditing ? 'Save Changes' : 'Create Filter');
+    saveBtn.addEventListener('click', () => {
+        if (saveRuleLogic()) {
+            renderFilterList();
+        }
     });
 
-        const cancelBtn = createTrackerButton('Cancel');
-        cancelBtn.addEventListener('click', () => {
-        renderFilterList(); // Go back to the list view without saving
-        });
+    const cancelBtn = createTrackerButton('Cancel');
+    cancelBtn.addEventListener('click', () => {
+        renderFilterList();
+    });
 
-        buttonContainer.appendChild(cancelBtn);
+    const saveAndCloseBtn = createTrackerButton(isEditing ? 'Save and Close' : 'Create Filter and Close');
+    saveAndCloseBtn.addEventListener('click', () => {
+        if (saveRuleLogic()) {
+            document.getElementById('otk-filter-window').style.display = 'none';
+        }
+    });
+
+    buttonContainer.appendChild(cancelBtn);
     buttonContainer.appendChild(saveBtn);
+    buttonContainer.appendChild(saveAndCloseBtn);
     form.appendChild(buttonContainer);
 
     rightContent.appendChild(form);
-    }
+}
 function renderFilterList() {
     const rightContent = document.getElementById('otk-filter-content');
     if (!rightContent) return;
@@ -7919,7 +8020,20 @@ function renderFilterList() {
         return;
     }
 
-    rules.forEach((rule) => {
+    const categoryDisplayMap = {
+        keyword: 'Keyword',
+        embeddedLink: 'Link',
+        attachedMedia: 'Media',
+        entireMessage: 'Message'
+    };
+
+    const actionDisplayMap = {
+        filterOut: 'Filter Out',
+        remove: 'Remove',
+        replace: 'Replace'
+    };
+
+    rules.forEach((rule, index) => {
         const ruleDiv = document.createElement('div');
         ruleDiv.style.cssText = `
             display: grid;
@@ -7931,14 +8045,72 @@ function renderFilterList() {
             background-color: ${rule.enabled ? '#3a3a3a' : '#2a2a2a'};
         `;
 
-        // Column 1: Checkbox & Toggle
-        const leftControls = document.createElement('div');
-        leftControls.style.cssText = 'display: flex; flex-direction: column; align-items: center; gap: 5px;';
+        // Column 1: Checkbox
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.dataset.ruleId = rule.id;
-        leftControls.appendChild(checkbox);
+        ruleDiv.appendChild(checkbox);
 
+        // Column 2: Main Content (Header + Details)
+        const mainContentDiv = document.createElement('div');
+        mainContentDiv.style.cssText = 'display: flex; flex-direction: column; gap: 5px; overflow: hidden;';
+
+        const headerDiv = document.createElement('div');
+        headerDiv.style.cssText = 'display: flex; align-items: center; gap: 10px;';
+
+        const title = document.createElement('h5');
+        const categoryStr = categoryDisplayMap[rule.category] || rule.category;
+        const actionStr = actionDisplayMap[rule.action] || rule.action;
+        title.textContent = `Filter #${index + 1} (${categoryStr}, ${actionStr})`;
+        title.style.cssText = 'margin: 0; font-size: 14px; color: #f0f0f0;';
+
+        const editIcon = document.createElement('span');
+        editIcon.innerHTML = '✏️';
+        editIcon.style.cursor = 'pointer';
+        editIcon.title = 'Edit Rule';
+        editIcon.addEventListener('click', () => renderFilterEditorView(rule));
+
+        const deleteIcon = document.createElement('span');
+        deleteIcon.innerHTML = '❌';
+        deleteIcon.style.cursor = 'pointer';
+        deleteIcon.title = 'Delete Rule';
+        deleteIcon.addEventListener('click', () => {
+             if (confirm('Are you sure you want to delete this rule?')) {
+                let currentRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
+                currentRules = currentRules.filter(r => r.id !== rule.id);
+                localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(currentRules));
+                renderFilterList();
+            }
+        });
+
+        headerDiv.appendChild(title);
+        headerDiv.appendChild(editIcon);
+        headerDiv.appendChild(deleteIcon);
+        mainContentDiv.appendChild(headerDiv);
+
+        const matchContentDiv = document.createElement('div');
+        matchContentDiv.innerHTML = `<strong>Match:</strong> <span style="font-family: monospace; padding: 2px 4px; border-radius: 3px;"></span>`;
+        matchContentDiv.querySelector('span').textContent = rule.matchContent;
+        matchContentDiv.style.whiteSpace = 'nowrap';
+        matchContentDiv.style.overflow = 'hidden';
+        matchContentDiv.style.textOverflow = 'ellipsis';
+        matchContentDiv.title = rule.matchContent;
+        mainContentDiv.appendChild(matchContentDiv);
+
+        if (rule.action === 'replace') {
+            const replaceContentDiv = document.createElement('div');
+            replaceContentDiv.innerHTML = `<strong>Replace:</strong> <span style="font-family: monospace; padding: 2px 4px; border-radius: 3px;"></span>`;
+            replaceContentDiv.querySelector('span').textContent = rule.replaceContent;
+            replaceContentDiv.style.whiteSpace = 'nowrap';
+            replaceContentDiv.style.overflow = 'hidden';
+            replaceContentDiv.style.textOverflow = 'ellipsis';
+            replaceContentDiv.title = rule.replaceContent;
+            mainContentDiv.appendChild(replaceContentDiv);
+        }
+
+        ruleDiv.appendChild(mainContentDiv);
+
+        // Column 3: Toggle
         const toggleSwitch = document.createElement('label');
         toggleSwitch.className = 'otk-switch';
         const toggleInput = document.createElement('input');
@@ -7958,57 +8130,7 @@ function renderFilterList() {
         toggleSlider.className = 'otk-slider round';
         toggleSwitch.appendChild(toggleInput);
         toggleSwitch.appendChild(toggleSlider);
-        leftControls.appendChild(toggleSwitch);
-        ruleDiv.appendChild(leftControls);
-
-        // Column 2: Rule Details
-        const detailsDiv = document.createElement('div');
-        detailsDiv.style.cssText = 'display: flex; flex-direction: column; gap: 5px; overflow: hidden;';
-
-        const categoryActionText = document.createElement('div');
-        categoryActionText.innerHTML = `<strong>Category:</strong> ${rule.category} | <strong>Action:</strong> ${rule.action}`;
-        categoryActionText.style.fontSize = '11px';
-        categoryActionText.style.color = '#ccc';
-        detailsDiv.appendChild(categoryActionText);
-
-        const matchContentDiv = document.createElement('div');
-        matchContentDiv.innerHTML = `<strong>Match:</strong> <span style="font-family: monospace; background-color: #222; padding: 2px 4px; border-radius: 3px;"></span>`;
-        matchContentDiv.querySelector('span').textContent = rule.matchContent;
-        matchContentDiv.style.whiteSpace = 'nowrap';
-        matchContentDiv.style.overflow = 'hidden';
-        matchContentDiv.style.textOverflow = 'ellipsis';
-        matchContentDiv.title = rule.matchContent; // Show full content on hover
-        detailsDiv.appendChild(matchContentDiv);
-
-        if (rule.action === 'replace') {
-            const replaceContentDiv = document.createElement('div');
-            replaceContentDiv.innerHTML = `<strong>Replace:</strong> <span style="font-family: monospace; background-color: #222; padding: 2px 4px; border-radius: 3px;"></span>`;
-            replaceContentDiv.querySelector('span').textContent = rule.replaceContent;
-            replaceContentDiv.style.whiteSpace = 'nowrap';
-            replaceContentDiv.style.overflow = 'hidden';
-            replaceContentDiv.style.textOverflow = 'ellipsis';
-            replaceContentDiv.title = rule.replaceContent;
-            detailsDiv.appendChild(replaceContentDiv);
-        }
-        ruleDiv.appendChild(detailsDiv);
-
-        // Column 3: Edit/Delete Buttons
-        const rightControls = document.createElement('div');
-        rightControls.style.cssText = 'display: flex; flex-direction: column; gap: 5px;';
-        const editBtn = createTrackerButton('Edit');
-        editBtn.addEventListener('click', () => renderFilterEditorView(rule));
-        const deleteBtn = createTrackerButton('Delete');
-        deleteBtn.addEventListener('click', () => {
-            if (confirm('Are you sure you want to delete this rule?')) {
-                let currentRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
-                currentRules = currentRules.filter(r => r.id !== rule.id);
-                localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(currentRules));
-                renderFilterList();
-            }
-        });
-        rightControls.appendChild(editBtn);
-        rightControls.appendChild(deleteBtn);
-        ruleDiv.appendChild(rightControls);
+        ruleDiv.appendChild(toggleSwitch);
 
         ruleListContainer.appendChild(ruleDiv);
     });
@@ -8081,7 +8203,7 @@ function setupFilterWindow() {
         position: fixed;
         top: 120px;
         left: 120px;
-        width: 600px;
+        width: 900px;
         height: 400px;
         background-color: #2c2c2c;
         border: 1px solid #444;
@@ -8174,6 +8296,12 @@ function setupFilterWindow() {
     const newFilterBtn = createTrackerButton('New Filter');
     newFilterBtn.addEventListener('click', () => renderFilterEditorView());
     leftMenu.appendChild(newFilterBtn);
+
+    const closeMenuBtn = createTrackerButton('Close');
+    closeMenuBtn.addEventListener('click', () => {
+        filterWindow.style.display = 'none';
+    });
+    leftMenu.appendChild(closeMenuBtn);
 
     document.body.appendChild(filterWindow);
     consoleLog("Filter Window setup complete.");
