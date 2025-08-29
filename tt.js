@@ -1330,12 +1330,14 @@ function isMessageFiltered(message, rules) {
             case 'keyword':
                 return messageText.includes(matchContent.toLowerCase());
             case 'attachedMedia':
-                return messageMd5 === matchContent.toLowerCase().replace('md5:', '');
+                // Do not convert to lower case, as MD5 (base64) is case sensitive.
+                return messageMd5 === matchContent.replace('md5:', '');
             case 'entireMessage':
                 try {
                     const conditions = JSON.parse(matchContent);
                     const textMatch = conditions.text ? messageText.includes(conditions.text.toLowerCase()) : true;
-                    const mediaHashInRule = conditions.media ? conditions.media.toLowerCase().replace('md5:', '') : null;
+                    // Do not convert to lower case for media hash
+                    const mediaHashInRule = conditions.media ? conditions.media.replace('md5:', '') : null;
                     const mediaMatch = mediaHashInRule ? messageMd5 === mediaHashInRule : true;
                     return textMatch && mediaMatch;
                 } catch (e) {
@@ -1371,12 +1373,14 @@ function doesAnyRuleMatch(message, rules) {
             case 'keyword':
                 return messageText.includes(matchContent.toLowerCase());
             case 'attachedMedia':
-                return messageMd5 === matchContent.toLowerCase().replace('md5:', '');
+                // Do not convert to lower case, as MD5 (base64) is case sensitive.
+                return messageMd5 === matchContent.replace('md5:', '');
             case 'entireMessage':
                  try {
                     const conditions = JSON.parse(matchContent);
                     const textMatch = conditions.text ? messageText.includes(conditions.text.toLowerCase()) : false;
-                    const mediaHashInRule = conditions.media ? conditions.media.toLowerCase().replace('md5:', '') : null;
+                    // Do not convert to lower case for media hash
+                    const mediaHashInRule = conditions.media ? conditions.media.replace('md5:', '') : null;
                     const mediaMatch = mediaHashInRule ? messageMd5 === mediaHashInRule : false;
                     return textMatch || mediaMatch;
                 } catch (e) {
@@ -4553,12 +4557,29 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
                 consoleLog('[Clear] Clearing IndexedDB mediaStore (preserving filtered media)...');
                 const filterRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
                 const preservedHashes = new Set();
+
                 filterRules.forEach(rule => {
+                    let mediaHash = null;
                     if (rule.category === 'attachedMedia' && rule.matchContent) {
-                        preservedHashes.add(rule.matchContent);
+                        mediaHash = rule.matchContent.replace('md5:', '');
+                    } else if (rule.category === 'entireMessage' && rule.matchContent) {
+                        try {
+                            const conditions = JSON.parse(rule.matchContent);
+                            if (conditions.media) {
+                                mediaHash = conditions.media.replace('md5:', '');
+                            }
+                        } catch (err) {
+                            consoleError(`[Clear] Failed to parse media hash from 'entireMessage' rule:`, rule.matchContent, err);
+                        }
+                    }
+
+                    if (mediaHash) {
+                        preservedHashes.add(mediaHash);
+                        preservedHashes.add(`${mediaHash}_thumb`); // Also preserve the thumbnail
                     }
                 });
-                consoleLog(`[Clear] Preserving ${preservedHashes.size} media files from filter rules.`);
+
+                consoleLog(`[Clear] Preserving ${preservedHashes.size} media files (including thumbnails) from filter rules.`);
 
                 const mediaTransaction = otkMediaDB.transaction(['mediaStore'], 'readwrite');
                 const mediaStore = mediaTransaction.objectStore('mediaStore');
@@ -4568,7 +4589,7 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
                     cursorRequest.onsuccess = (event) => {
                         const cursor = event.target.result;
                         if (cursor) {
-                            if (!preservedHashes.has(cursor.value.filehash)) {
+                            if (!preservedHashes.has(cursor.key)) {
                                 cursor.delete();
                             }
                             cursor.continue();
@@ -7903,11 +7924,16 @@ function renderFilterEditorView(ruleToEdit = null) {
     form.appendChild(createRow('Action:', actionSelect));
 
     // Match Content Input
-    const matchContentInput = document.createElement('textarea');
+    const matchContentRow = createRow('Match Content:', document.createElement('textarea'));
+    const matchContentInput = matchContentRow.querySelector('textarea');
     matchContentInput.placeholder = 'Content to match...';
-    matchContentInput.style.cssText = 'flex-grow: 1; width: 100%; box-sizing: border-box; resize: vertical;';
     matchContentInput.value = rule.matchContent;
-    form.appendChild(createRow('Match Content:', matchContentInput));
+
+    // Make this row and its textarea grow to fill available space
+    matchContentRow.style.flexGrow = '1';
+    matchContentRow.style.alignItems = 'stretch';
+    matchContentInput.style.cssText = 'flex-grow: 1; width: 100%; box-sizing: border-box; resize: vertical; height: 100%;';
+    form.appendChild(matchContentRow);
 
     // Replace Content Input (conditionally displayed)
     const replaceContentRow = createRow('Replace With:', document.createElement('textarea'));
@@ -8002,10 +8028,20 @@ function renderFilterList() {
     checkAllContainer.appendChild(checkAllLabel);
     header.appendChild(checkAllContainer);
 
+    const buttonGroup = document.createElement('div');
+    buttonGroup.style.cssText = 'display: flex; gap: 10px;';
+
+    const editSelectedBtn = createTrackerButton('Edit Selected');
+    editSelectedBtn.id = 'otk-edit-selected-filter-btn';
+    editSelectedBtn.style.display = 'none';
+    buttonGroup.appendChild(editSelectedBtn);
+
     const deleteSelectedBtn = createTrackerButton('Delete Selected');
     deleteSelectedBtn.id = 'otk-delete-selected-filters-btn';
-    deleteSelectedBtn.style.display = 'none'; // Hide by default
-    header.appendChild(deleteSelectedBtn);
+    deleteSelectedBtn.style.display = 'none';
+    buttonGroup.appendChild(deleteSelectedBtn);
+
+    header.appendChild(buttonGroup);
 
     rightContent.appendChild(header);
 
@@ -8045,13 +8081,11 @@ function renderFilterList() {
             background-color: ${rule.enabled ? '#3a3a3a' : '#2a2a2a'};
         `;
 
-        // Column 1: Checkbox
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.dataset.ruleId = rule.id;
         ruleDiv.appendChild(checkbox);
 
-        // Column 2: Main Content (Header + Details)
         const mainContentDiv = document.createElement('div');
         mainContentDiv.style.cssText = 'display: flex; flex-direction: column; gap: 5px; overflow: hidden;';
 
@@ -8064,38 +8098,115 @@ function renderFilterList() {
         title.textContent = `Filter #${index + 1} (${categoryStr}, ${actionStr})`;
         title.style.cssText = 'margin: 0; font-size: 14px; color: #f0f0f0;';
 
-        const editIcon = document.createElement('span');
-        editIcon.innerHTML = '✏️';
-        editIcon.style.cursor = 'pointer';
-        editIcon.title = 'Edit Rule';
-        editIcon.addEventListener('click', () => renderFilterEditorView(rule));
-
-        const deleteIcon = document.createElement('span');
-        deleteIcon.innerHTML = '❌';
-        deleteIcon.style.cursor = 'pointer';
-        deleteIcon.title = 'Delete Rule';
-        deleteIcon.addEventListener('click', () => {
-             if (confirm('Are you sure you want to delete this rule?')) {
-                let currentRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
-                currentRules = currentRules.filter(r => r.id !== rule.id);
-                localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(currentRules));
-                renderFilterList();
-            }
-        });
-
         headerDiv.appendChild(title);
-        headerDiv.appendChild(editIcon);
-        headerDiv.appendChild(deleteIcon);
         mainContentDiv.appendChild(headerDiv);
 
         const matchContentDiv = document.createElement('div');
-        matchContentDiv.innerHTML = `<strong>Match:</strong> <span style="font-family: monospace; padding: 2px 4px; border-radius: 3px;"></span>`;
-        matchContentDiv.querySelector('span').textContent = rule.matchContent;
         matchContentDiv.style.whiteSpace = 'nowrap';
         matchContentDiv.style.overflow = 'hidden';
         matchContentDiv.style.textOverflow = 'ellipsis';
         matchContentDiv.title = rule.matchContent;
+
+        const strongEl = document.createElement('strong');
+        strongEl.textContent = 'Match: ';
+        matchContentDiv.appendChild(strongEl);
+
+        const codeSpan = document.createElement('span');
+        codeSpan.style.fontFamily = 'monospace';
+        codeSpan.style.padding = '2px 4px';
+        codeSpan.style.borderRadius = '3px';
+
+        let mediaHashForPopup = null;
+        let hoverTarget = null;
+
+        if (rule.category === 'attachedMedia') {
+            mediaHashForPopup = rule.matchContent.replace('md5:', '');
+            codeSpan.textContent = rule.matchContent;
+            hoverTarget = codeSpan;
+        } else if (rule.category === 'entireMessage') {
+            try {
+                const conditions = JSON.parse(rule.matchContent);
+                if (conditions.media) {
+                    mediaHashForPopup = conditions.media.replace('md5:', '');
+                    const mediaValue = conditions.media;
+                    const textBefore = rule.matchContent.substring(0, rule.matchContent.indexOf(mediaValue));
+                    const textAfter = rule.matchContent.substring(rule.matchContent.indexOf(mediaValue) + mediaValue.length);
+
+                    codeSpan.appendChild(document.createTextNode(textBefore));
+                    const hashSpan = document.createElement('span');
+                    hashSpan.className = 'otk-media-hash-preview';
+                    hashSpan.textContent = mediaValue;
+                    hashSpan.style.textDecoration = 'underline';
+                    hashSpan.style.cursor = 'pointer';
+                    codeSpan.appendChild(hashSpan);
+                    codeSpan.appendChild(document.createTextNode(textAfter));
+                    hoverTarget = hashSpan;
+                } else {
+                    codeSpan.textContent = rule.matchContent;
+                }
+            } catch (e) {
+                codeSpan.textContent = rule.matchContent;
+            }
+        } else {
+            codeSpan.textContent = rule.matchContent;
+        }
+
+        matchContentDiv.appendChild(codeSpan);
         mainContentDiv.appendChild(matchContentDiv);
+
+        if (hoverTarget && mediaHashForPopup) {
+            let thumbnailPopup = null;
+            let blobUrl = null;
+
+            const hideThumbnail = () => {
+                if (thumbnailPopup) {
+                    thumbnailPopup.remove();
+                    thumbnailPopup = null;
+                }
+                if (blobUrl) {
+                    URL.revokeObjectURL(blobUrl);
+                    blobUrl = null;
+                }
+            };
+
+            hoverTarget.addEventListener('mouseenter', (e) => {
+                hideThumbnail();
+                if (!otkMediaDB) return;
+                const thumbKey = `${mediaHashForPopup}_thumb`;
+
+                const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                const store = transaction.objectStore('mediaStore');
+                const request = store.get(thumbKey);
+
+                request.onsuccess = (event) => {
+                    const storedItem = event.target.result;
+                    thumbnailPopup = document.createElement('div');
+                    thumbnailPopup.id = 'otk-thumbnail-popup';
+                    thumbnailPopup.style.cssText = `
+                        position: fixed; z-index: 10005; background: #1a1a1a;
+                        border: 1px solid #555; border-radius: 3px; padding: 5px;
+                        pointer-events: none; max-width: 250px; max-height: 250px;
+                    `;
+                    if (storedItem && storedItem.blob) {
+                        blobUrl = URL.createObjectURL(storedItem.blob);
+                        const img = document.createElement('img');
+                        img.src = blobUrl;
+                        img.style.cssText = 'max-width: 100%; max-height: 100%; display: block;';
+                        thumbnailPopup.appendChild(img);
+                    } else {
+                        thumbnailPopup.textContent = 'Thumbnail not in cache';
+                        thumbnailPopup.style.color = '#ccc';
+                        thumbnailPopup.style.fontSize = '12px';
+                    }
+                    document.body.appendChild(thumbnailPopup);
+                    thumbnailPopup.style.left = `${e.clientX + 15}px`;
+                    thumbnailPopup.style.top = `${e.clientY + 15}px`;
+                };
+                request.onerror = (event) => consoleError("Error fetching thumbnail for popup:", event.target.error);
+            });
+
+            hoverTarget.addEventListener('mouseleave', hideThumbnail);
+        }
 
         if (rule.action === 'replace') {
             const replaceContentDiv = document.createElement('div');
@@ -8110,7 +8221,6 @@ function renderFilterList() {
 
         ruleDiv.appendChild(mainContentDiv);
 
-        // Column 3: Toggle
         const toggleSwitch = document.createElement('label');
         toggleSwitch.className = 'otk-switch';
         const toggleInput = document.createElement('input');
@@ -8136,41 +8246,43 @@ function renderFilterList() {
     });
 
     const checkboxes = Array.from(ruleListContainer.querySelectorAll('input[type="checkbox"][data-rule-id]'));
-    const toggleDeleteButton = () => {
-        const anyChecked = checkboxes.some(cb => cb.checked);
-        deleteSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+
+    const updateBulkActionButtons = () => {
+        const checkedCount = checkboxes.filter(cb => cb.checked).length;
+        deleteSelectedBtn.style.display = checkedCount > 0 ? 'inline-block' : 'none';
+        editSelectedBtn.style.display = checkedCount === 1 ? 'inline-block' : 'none';
+
         const allChecked = checkboxes.every(cb => cb.checked);
-        if (checkboxes.length > 0) {
-            checkAllBox.checked = anyChecked && allChecked;
-        } else {
-            checkAllBox.checked = false;
-        }
+        checkAllBox.checked = checkboxes.length > 0 && allChecked;
     };
 
-    checkboxes.forEach(cb => cb.addEventListener('change', toggleDeleteButton));
+    checkboxes.forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
 
     checkAllBox.addEventListener('change', () => {
         checkboxes.forEach(cb => cb.checked = checkAllBox.checked);
-        toggleDeleteButton();
+        updateBulkActionButtons();
     });
 
     deleteSelectedBtn.addEventListener('click', () => {
         if (!confirm('Are you sure you want to delete the selected rules?')) return;
-
         let currentRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
-        const idsToDelete = new Set(
-            checkboxes
-                .filter(cb => cb.checked)
-                .map(cb => cb.dataset.ruleId)
-                .map(id => parseInt(id, 10))
-        );
-
+        const idsToDelete = new Set(checkboxes.filter(cb => cb.checked).map(cb => parseInt(cb.dataset.ruleId, 10)));
         const newRules = currentRules.filter(rule => !idsToDelete.has(rule.id));
         localStorage.setItem(FILTER_RULES_V2_KEY, JSON.stringify(newRules));
         renderFilterList();
     });
 
-    // Add CSS for the toggle switch if it doesn't exist
+    editSelectedBtn.addEventListener('click', () => {
+        const selectedCheckbox = checkboxes.find(cb => cb.checked);
+        if (selectedCheckbox) {
+            const ruleId = parseInt(selectedCheckbox.dataset.ruleId, 10);
+            const ruleToEdit = rules.find(r => r.id === ruleId);
+            if (ruleToEdit) {
+                renderFilterEditorView(ruleToEdit);
+            }
+        }
+    });
+
     if (!document.getElementById('otk-switch-styles')) {
         const style = document.createElement('style');
         style.id = 'otk-switch-styles';
