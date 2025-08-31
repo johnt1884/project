@@ -2783,6 +2783,279 @@ function wrapInCollapsibleContainer(elementsToWrap) {
     return container;
 }
 
+function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId, ancestors, allThemeSettings, shouldDisplayFilenames, shouldDisableUnderline) {
+    const textElement = document.createElement('div');
+    textElement.style.whiteSpace = 'pre-wrap';
+    textElement.style.overflowWrap = 'break-word';
+    textElement.style.wordBreak = 'normal';
+
+    if (isTopLevelMessage) {
+        textElement.style.fontSize = 'var(--otk-msg-depth0-content-font-size)';
+    } else if (currentDepth === 1) {
+        textElement.style.fontSize = 'var(--otk-msg-depth1-content-font-size)';
+    } else {
+        textElement.style.fontSize = 'var(--otk-msg-depth2plus-content-font-size)';
+    }
+
+    if (shouldDisableUnderline) {
+        textElement.style.marginTop = '0px';
+        textElement.style.paddingTop = '0px';
+    }
+
+    if (message.text && typeof message.text === 'string') {
+        const lines = message.text.split('\n');
+        const quoteRegex = /^>>(\d+)/;
+        const inlineQuoteRegex = />>(\d+)/;
+
+        lines.forEach((line, lineIndex) => {
+            const trimmedLine = line.trim();
+            const isBlockQuote = trimmedLine.match(quoteRegex) && trimmedLine.match(quoteRegex)[0] === trimmedLine;
+            if (isBlockQuote && currentDepth >= MAX_QUOTE_DEPTH) {
+                return;
+            }
+
+            let processedAsEmbed = false;
+            let soleUrlEmbedMade = false;
+
+            const youtubePatterns = [
+                { regex: /^(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?=.*v=([a-zA-Z0-9_-]+))(?:[?&%#\w\-=\.\/;:]+)+$/, idGroup: 1 },
+                { regex: /^(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+                { regex: /^(?:https?:\/\/)?youtu\.be\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 }
+            ];
+            const youtubeTimestampRegex = /[?&]t=([0-9hm_s]+)/;
+            const inlineYoutubePatterns = [
+                { type: 'watch', regex: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?:[^#&?\s]*&)*v=([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 },
+                { type: 'short', regex: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 },
+                { type: 'youtu.be', regex: /(?:https?:\/\/)?youtu\.be\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 }
+            ];
+            const twitchPatterns = [
+                { type: 'clip_direct', regex: /^(?:https?:\/\/)?clips\.twitch\.tv\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+                { type: 'clip_channel', regex: /^(?:https?:\/\/)?(?:www\.)?twitch\.tv\/[a-zA-Z0-9_]+\/clip\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+                { type: 'vod', regex: /^(?:https?:\/\/)?(?:www\.)?twitch\.tv\/(?:videos|v)\/(\d+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 }
+            ];
+            const twitchTimestampRegex = /[?&]t=((?:\d+h)?(?:\d+m)?(?:\d+s)?)/;
+            const inlineTwitchPatterns = [
+                { type: 'clip_direct', regex: /(?:https?:\/\/)?clips\.twitch\.tv\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 },
+                { type: 'clip_channel', regex: /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/[a-zA-Z0-9_]+\/clip\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 },
+                { type: 'vod', regex: /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/(?:videos|v)\/(\d+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+            ];
+            const streamablePatterns = [
+                { type: 'video', regex: /^(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?#][^\s]*)?$/, idGroup: 1 }
+            ];
+            const inlineStreamablePatterns = [
+                { type: 'video', regex: /(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+            ];
+            const tiktokPatterns = [
+                { type: 'video', regex: /^(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@[\w.-]+\/video\/(\d+)/, idGroup: 1 }
+            ];
+            const inlineTiktokPatterns = [
+                { type: 'video', regex: /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@[\w.-]+\/video\/(\d+)/, idGroup: 1 }
+            ];
+            const kickPatterns = [
+                { type: 'clip', regex: /^(?:https?:\/\/)?kick\.com\/[\w.-]+\?clip=([\w-]+)/, idGroup: 1 }
+            ];
+            const inlineKickPatterns = [
+                { type: 'clip', regex: /(?:https?:\/\/)?kick\.com\/[\w.-]+\?clip=([\w-]+)/, idGroup: 1 }
+            ];
+
+            if (!soleUrlEmbedMade) {
+                for (const patternObj of youtubePatterns) {
+                    const match = trimmedLine.match(patternObj.regex);
+                    if (match) {
+                        const videoId = match[patternObj.idGroup];
+                        let timestampStr = null;
+                        const timeMatch = trimmedLine.match(youtubeTimestampRegex);
+                        if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
+                        if (videoId) {
+                            textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
+                            soleUrlEmbedMade = true;
+                            processedAsEmbed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!soleUrlEmbedMade) {
+                for (const patternObj of twitchPatterns) {
+                    const match = trimmedLine.match(patternObj.regex);
+                    if (match) {
+                        const id = match[patternObj.idGroup];
+                        let timestampStr = null;
+                        if (patternObj.type === 'vod') {
+                            const timeMatch = trimmedLine.match(twitchTimestampRegex);
+                            if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
+                        }
+                        if (id) {
+                            textElement.appendChild(createTwitchEmbedElement(patternObj.type, id, timestampStr));
+                            soleUrlEmbedMade = true;
+                            processedAsEmbed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!soleUrlEmbedMade) {
+                for (const patternObj of tiktokPatterns) {
+                    const match = trimmedLine.match(patternObj.regex);
+                    if (match) {
+                        const videoId = match[patternObj.idGroup];
+                        if (videoId) {
+                            textElement.appendChild(createTikTokEmbedElement(videoId));
+                            soleUrlEmbedMade = true;
+                            processedAsEmbed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!soleUrlEmbedMade) {
+                for (const patternObj of streamablePatterns) {
+                    const match = trimmedLine.match(patternObj.regex);
+                    if (match) {
+                        const videoId = match[patternObj.idGroup];
+                        if (videoId) {
+                            textElement.appendChild(createStreamableEmbedElement(videoId));
+                            soleUrlEmbedMade = true;
+                            processedAsEmbed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!soleUrlEmbedMade) {
+                let currentTextSegment = line;
+                while (currentTextSegment.length > 0) {
+                    let earliestMatch = null;
+                    let earliestMatchPattern = null;
+                    let earliestMatchType = null;
+                    let earliestMatchIsQuoteLink = false;
+
+                    for (const patternObj of [...inlineYoutubePatterns, ...inlineKickPatterns, ...inlineTiktokPatterns, ...inlineTwitchPatterns, ...inlineStreamablePatterns]) {
+                        const matchAttempt = currentTextSegment.match(patternObj.regex);
+                        if (matchAttempt && (earliestMatch === null || matchAttempt.index < earliestMatch.index)) {
+                            earliestMatch = matchAttempt;
+                            earliestMatchPattern = patternObj;
+                            if (inlineYoutubePatterns.includes(patternObj)) earliestMatchType = 'youtube';
+                            else if (inlineKickPatterns.includes(patternObj)) earliestMatchType = 'kick';
+                            else if (inlineTiktokPatterns.includes(patternObj)) earliestMatchType = 'tiktok';
+                            else if (inlineTwitchPatterns.includes(patternObj)) earliestMatchType = 'twitch';
+                            else if (inlineStreamablePatterns.includes(patternObj)) earliestMatchType = 'streamable';
+                            earliestMatchIsQuoteLink = false;
+                        }
+                    }
+
+                    const quoteLinkMatch = currentTextSegment.match(inlineQuoteRegex);
+                    if (quoteLinkMatch && (earliestMatch === null || quoteLinkMatch.index < earliestMatch.index)) {
+                        earliestMatch = quoteLinkMatch;
+                        earliestMatchType = null;
+                        earliestMatchIsQuoteLink = true;
+                    }
+
+                    if (earliestMatch) {
+                        processedAsEmbed = true;
+                        if (earliestMatch.index > 0) {
+                            textElement.appendChild(document.createTextNode(currentTextSegment.substring(0, earliestMatch.index)));
+                        }
+                        const matchedText = earliestMatch[0];
+                        if (earliestMatchIsQuoteLink) {
+                            if (currentDepth >= MAX_QUOTE_DEPTH) {
+                                textElement.appendChild(document.createTextNode(matchedText));
+                            } else {
+                                const quotedMessageId = earliestMatch[1];
+                                let quotedMessageObject = null;
+                                for (const threadIdKey in messagesByThreadId) {
+                                    if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
+                                        const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
+                                        if (foundMsg) {
+                                            quotedMessageObject = foundMsg;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (quotedMessageObject) {
+                                    const quotedElement = createMessageElementDOM(quotedMessageObject, mediaLoadPromises, uniqueImageViewerHashes, quotedMessageObject.board || boardForLink, false, currentDepth + 1, null, message.id, ancestors);
+                                    if (quotedElement) {
+                                        textElement.appendChild(quotedElement);
+                                    }
+                                } else {
+                                    const notFoundSpan = document.createElement('span');
+                                    notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
+                                    notFoundSpan.style.color = '#88ccee';
+                                    notFoundSpan.style.textDecoration = 'underline';
+                                    textElement.appendChild(notFoundSpan);
+                                }
+                            }
+                        } else {
+                            const id = earliestMatch[earliestMatchPattern.idGroup];
+                            let timestampStr = null;
+                            let embedElement = null;
+                            if (earliestMatchType === 'youtube') {
+                                const timeMatchInUrl = matchedText.match(youtubeTimestampRegex);
+                                if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
+                                embedElement = createYouTubeEmbedElement(id, timestampStr);
+                            } else if (earliestMatchType === 'twitch') {
+                                if (earliestMatchPattern.type === 'vod') {
+                                    const timeMatchInUrl = matchedText.match(twitchTimestampRegex);
+                                    if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
+                                }
+                                embedElement = createTwitchEmbedElement(earliestMatchPattern.type, id, timestampStr);
+                            } else if (earliestMatchType === 'streamable') {
+                                embedElement = createStreamableEmbedElement(id);
+                            } else if (earliestMatchType === 'tiktok') {
+                                embedElement = createTikTokEmbedElement(id);
+                            } else if (earliestMatchType === 'kick') {
+                                embedElement = createKickEmbedElement(id);
+                            }
+                            if (embedElement) {
+                                textElement.appendChild(embedElement);
+                            }
+                        }
+                        currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedText.length);
+                    } else {
+                        if (currentTextSegment.length > 0) {
+                            textElement.appendChild(document.createTextNode(currentTextSegment));
+                        }
+                        currentTextSegment = "";
+                    }
+                }
+            }
+            if (lineIndex < lines.length - 1 && (trimmedLine.length > 0 || processedAsEmbed)) {
+                textElement.appendChild(document.createElement('br'));
+            }
+        });
+    } else {
+        textElement.textContent = message.text || '';
+    }
+
+    if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
+        textElement.removeChild(textElement.firstChild);
+    }
+
+    let attachmentDiv = null;
+    if (message.attachment && message.attachment.tim) {
+        const actualBoardForLink = boardForLink || message.board || 'b';
+        attachmentDiv = document.createElement('div');
+        attachmentDiv.style.marginTop = '10px';
+
+        if (shouldDisplayFilenames) {
+            const filenameLink = document.createElement('a');
+            filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
+            filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+            filenameLink.target = "_blank";
+            filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
+            attachmentDiv.appendChild(filenameLink);
+        }
+
+        _populateAttachmentDivWithMedia(
+            attachmentDiv, message, actualBoardForLink, mediaLoadPromises,
+            uniqueImageViewerHashes, isTopLevelMessage, 'default',
+            renderedFullSizeImageHashes, viewerTopLevelAttachedVideoHashes, otkMediaDB
+        );
+    }
+
+    return [textElement, attachmentDiv];
+}
     // Signature now includes parentMessageId and ancestors
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId = null, ancestors = new Set()) {
         const filterRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
@@ -3212,295 +3485,7 @@ function wrapInCollapsibleContainer(elementsToWrap) {
                 });
             }
             messageDiv.appendChild(messageHeader);
-
-            const textElement = document.createElement('div');
-            textElement.style.whiteSpace = 'pre-wrap'; // Preserve line breaks
-            textElement.style.overflowWrap = 'break-word'; // Allow breaking normally unbreakable words
-            textElement.style.wordBreak = 'normal'; // Prefer whole word wrapping
-            // Apply depth-specific font size for default layout
-            if (isTopLevelMessage) {
-                textElement.style.fontSize = 'var(--otk-msg-depth0-content-font-size)';
-            } else if (currentDepth === 1) {
-                textElement.style.fontSize = 'var(--otk-msg-depth1-content-font-size)';
-            } else { // currentDepth >= 2
-                textElement.style.fontSize = 'var(--otk-msg-depth2plus-content-font-size)';
-            }
-
-            if (shouldDisableUnderline) { // Apply to all depths when underline is hidden
-                textElement.style.marginTop = '0px';
-                textElement.style.paddingTop = '0px';
-            }
-
-            if (processedMessage.text && typeof processedMessage.text === 'string') {
-                const lines = processedMessage.text.split('\n');
-                const quoteRegex = /^>>(\d+)/; // For block-level quotes
-                const inlineQuoteRegex = />>(\d+)/; // For inline quotes
-
-                lines.forEach((line, lineIndex) => {
-                    const trimmedLine = line.trim();
-                    const isBlockQuote = trimmedLine.match(quoteRegex) && trimmedLine.match(quoteRegex)[0] === trimmedLine;
-
-                    if (isBlockQuote && currentDepth >= MAX_QUOTE_DEPTH) {
-                        return; // Skip rendering this line entirely if it's a blockquote at max depth
-                    }
-
-                    let processedAsEmbed = false;
-                    let soleUrlEmbedMade = false;
-
-                    // --- 1. Handle lines that are solely a media URL ---
-                    // Check for Sole YouTube URL
-                    if (!soleUrlEmbedMade) {
-                        for (const patternObj of youtubePatterns) {
-                            const match = trimmedLine.match(patternObj.regex);
-                            if (match) {
-                                const videoId = match[patternObj.idGroup];
-                                let timestampStr = null;
-                                const timeMatch = trimmedLine.match(youtubeTimestampRegex);
-                                if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
-                                if (videoId) {
-                                    const canonicalEmbedId = `youtube_${videoId}`;
-                                    if (isTopLevelMessage) {
-                                        viewerTopLevelEmbedIds.add(canonicalEmbedId);
-                                        if (!seenEmbeds.includes(canonicalEmbedId)) {
-                                            seenEmbeds.push(canonicalEmbedId);
-                                            localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
-                                            let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-                                            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics(false);
-                                        }
-                                    }
-                                    textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
-                                    soleUrlEmbedMade = true;
-                                    processedAsEmbed = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // (Similar blocks for Twitch, TikTok, Streamable as in the original code)
-                    // Check for Sole Twitch URL
-                    if (!soleUrlEmbedMade) {
-                        for (const patternObj of twitchPatterns) {
-                            const match = trimmedLine.match(patternObj.regex);
-                            if (match) {
-                                const id = match[patternObj.idGroup];
-                                let timestampStr = null;
-                                if (patternObj.type === 'vod') {
-                                    const timeMatch = trimmedLine.match(twitchTimestampRegex);
-                                    if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
-                                }
-                                if (id) {
-                                    const canonicalEmbedId = `twitch_${patternObj.type}_${id}`;
-                                    if (isTopLevelMessage) {
-                                        viewerTopLevelEmbedIds.add(canonicalEmbedId);
-                                        if (!seenEmbeds.includes(canonicalEmbedId)) {
-                                            seenEmbeds.push(canonicalEmbedId);
-                                            localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
-                                            let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-                                            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics(false);
-                                        }
-                                    }
-                                    textElement.appendChild(createTwitchEmbedElement(patternObj.type, id, timestampStr));
-                                    soleUrlEmbedMade = true;
-                                    processedAsEmbed = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Check for Sole TikTok URL
-                    if (!soleUrlEmbedMade) {
-                        for (const patternObj of tiktokPatterns) {
-                            const match = trimmedLine.match(patternObj.regex);
-                            if (match) {
-                                const videoId = match[patternObj.idGroup];
-                                if (videoId) {
-                                    const canonicalEmbedId = `tiktok_${videoId}`;
-                                    if (isTopLevelMessage) {
-                                        viewerTopLevelEmbedIds.add(canonicalEmbedId);
-                                        if (!seenEmbeds.includes(canonicalEmbedId)) {
-                                            seenEmbeds.push(canonicalEmbedId);
-                                            localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
-                                            let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-                                            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics(false);
-                                        }
-                                    }
-                                    textElement.appendChild(createTikTokEmbedElement(videoId));
-                                    soleUrlEmbedMade = true;
-                                    processedAsEmbed = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Check for Sole Streamable URL
-                    if (!soleUrlEmbedMade) {
-                        for (const patternObj of streamablePatterns) {
-                            const match = trimmedLine.match(patternObj.regex);
-                            if (match) {
-                                const videoId = match[patternObj.idGroup];
-                                if (videoId) {
-                                    const canonicalEmbedId = `streamable_${videoId}`;
-                                    if (isTopLevelMessage) {
-                                        viewerTopLevelEmbedIds.add(canonicalEmbedId);
-                                        if (!seenEmbeds.includes(canonicalEmbedId)) {
-                                            seenEmbeds.push(canonicalEmbedId);
-                                            localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
-                                            let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-                                            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics(false);
-                                        }
-                                    }
-                                    textElement.appendChild(createStreamableEmbedElement(videoId));
-                                    soleUrlEmbedMade = true;
-                                    processedAsEmbed = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-
-                    // --- 2. Handle mixed content lines iteratively ---
-                    if (!soleUrlEmbedMade) {
-                        let currentTextSegment = line;
-
-                        while (currentTextSegment.length > 0) {
-                            let earliestMatch = null;
-                            let earliestMatchPattern = null;
-                            let earliestMatchType = null;
-                            let earliestMatchIsQuoteLink = false;
-
-                            // Find earliest media embed match
-                            for (const patternObj of [...inlineYoutubePatterns, ...inlineKickPatterns, ...inlineTiktokPatterns, ...inlineTwitchPatterns, ...inlineStreamablePatterns]) {
-                                const matchAttempt = currentTextSegment.match(patternObj.regex);
-                                if (matchAttempt && (earliestMatch === null || matchAttempt.index < earliestMatch.index)) {
-                                    earliestMatch = matchAttempt;
-                                    earliestMatchPattern = patternObj;
-                                    // Determine type based on pattern object properties if needed, simplified here
-                                    if (inlineYoutubePatterns.includes(patternObj)) earliestMatchType = 'youtube';
-                                    else if (inlineKickPatterns.includes(patternObj)) earliestMatchType = 'kick';
-                                    else if (inlineTiktokPatterns.includes(patternObj)) earliestMatchType = 'tiktok';
-                                    else if (inlineTwitchPatterns.includes(patternObj)) earliestMatchType = 'twitch';
-                                    else if (inlineStreamablePatterns.includes(patternObj)) earliestMatchType = 'streamable';
-                                    earliestMatchIsQuoteLink = false;
-                                }
-                            }
-
-                            // Find earliest >>ddd quote link match
-                            const quoteLinkMatch = currentTextSegment.match(inlineQuoteRegex);
-                            if (quoteLinkMatch && (earliestMatch === null || quoteLinkMatch.index < earliestMatch.index)) {
-                                earliestMatch = quoteLinkMatch;
-                                earliestMatchType = null;
-                                earliestMatchIsQuoteLink = true;
-                            }
-
-                            if (earliestMatch) {
-                                processedAsEmbed = true;
-                                // Append text before the match
-                                if (earliestMatch.index > 0) {
-                                    textElement.appendChild(document.createTextNode(currentTextSegment.substring(0, earliestMatch.index)));
-                                }
-
-                                const matchedText = earliestMatch[0];
-
-                                if (earliestMatchIsQuoteLink) {
-                                    // Handle quote rendering directly, respecting MAX_QUOTE_DEPTH
-                                    if (currentDepth >= MAX_QUOTE_DEPTH) {
-                                        textElement.appendChild(document.createTextNode(matchedText));
-                                    } else {
-                                        const quotedMessageId = earliestMatch[1];
-                                        let quotedMessageObject = null;
-                                        for (const threadIdKey in messagesByThreadId) {
-                                            if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
-                                                const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
-                                                if (foundMsg) {
-                                                    quotedMessageObject = foundMsg;
-                                                    break;
-                                                }
-                                            }
-                                        }
-
-                                        if (quotedMessageObject) {
-                                            const quotedElement = createMessageElementDOM(quotedMessageObject, mediaLoadPromises, uniqueImageViewerHashes, quotedMessageObject.board || boardForLink, false, currentDepth + 1, null, message.id, newAncestors);
-                                            if (quotedElement) {
-                                                textElement.appendChild(quotedElement);
-                                            }
-                                        } else {
-                                            const notFoundSpan = document.createElement('span');
-                                            notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
-                                            notFoundSpan.style.color = '#88ccee';
-                                            notFoundSpan.style.textDecoration = 'underline';
-                                            textElement.appendChild(notFoundSpan);
-                                        }
-                                    }
-                                } else { // It's a media embed
-                                    const id = earliestMatch[earliestMatchPattern.idGroup];
-                                    let timestampStr = null;
-                                    let embedElement = null;
-                                    let canonicalEmbedId = null;
-
-                                    if (earliestMatchType === 'youtube') {
-                                        const timeMatchInUrl = matchedText.match(youtubeTimestampRegex);
-                                        if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
-                                        canonicalEmbedId = `youtube_${id}`;
-                                        embedElement = createYouTubeEmbedElement(id, timestampStr);
-                                    } else if (earliestMatchType === 'twitch') {
-                                        if (earliestMatchPattern.type === 'vod') {
-                                            const timeMatchInUrl = matchedText.match(twitchTimestampRegex);
-                                            if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
-                                        }
-                                        canonicalEmbedId = `twitch_${earliestMatchPattern.type}_${id}`;
-                                        embedElement = createTwitchEmbedElement(earliestMatchPattern.type, id, timestampStr);
-                                    } else if (earliestMatchType === 'streamable') {
-                                        canonicalEmbedId = `streamable_${id}`;
-                                        embedElement = createStreamableEmbedElement(id);
-                                    } else if (earliestMatchType === 'tiktok') {
-                                        canonicalEmbedId = `tiktok_${id}`;
-                                        embedElement = createTikTokEmbedElement(id);
-                                    } else if (earliestMatchType === 'kick') {
-                                        canonicalEmbedId = `kick_${id}`;
-                                        embedElement = createKickEmbedElement(id);
-                                    }
-
-                                    if (embedElement) {
-                                        if (isTopLevelMessage && canonicalEmbedId) {
-                                            viewerTopLevelEmbedIds.add(canonicalEmbedId);
-                                            if (!seenEmbeds.includes(canonicalEmbedId)) {
-                                                seenEmbeds.push(canonicalEmbedId);
-                                                localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
-                                                let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-                                                localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                                updateDisplayedStatistics(false);
-                                            }
-                                        }
-                                        textElement.appendChild(embedElement);
-                                    }
-                                }
-                                currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedText.length);
-                            } else {
-                                // No more matches, append the rest of the text
-                                if (currentTextSegment.length > 0) {
-                                    textElement.appendChild(document.createTextNode(currentTextSegment));
-                                }
-                                currentTextSegment = ""; // Exit loop
-                            }
-                        }
-                    }
-
-                    if (lineIndex < lines.length - 1 && (trimmedLine.length > 0 || processedAsEmbed)) {
-                        textElement.appendChild(document.createElement('br'));
-                    }
-                });
-            } else {
-                textElement.textContent = processedMessage.text || ''; // Handle null or undefined message.text
-            }
-
-            if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
-                textElement.removeChild(textElement.firstChild);
-            }
+            const [textElement, attachmentDiv] = _populateMessageBody(processedMessage, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId, newAncestors, allThemeSettings, shouldDisplayFilenames, shouldDisableUnderline);
 
             // Click listener for anchoring
             const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
@@ -3565,32 +3550,65 @@ function wrapInCollapsibleContainer(elementsToWrap) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
 
-            let attachmentDiv = null;
-            if (processedMessage.attachment && processedMessage.attachment.tim) {
-                const actualBoardForLink = boardForLink || message.board || 'b';
-                attachmentDiv = document.createElement('div');
-                attachmentDiv.style.marginTop = '10px';
-
-                if (shouldDisplayFilenames) {
-                    const filenameLink = document.createElement('a');
-                    filenameLink.textContent = `${processedMessage.attachment.filename} (${processedMessage.attachment.ext.substring(1)})`;
-                    filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${processedMessage.attachment.tim}${processedMessage.attachment.ext}`;
-                    filenameLink.target = "_blank";
-                    filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
-                    attachmentDiv.appendChild(filenameLink);
-                }
-
-                _populateAttachmentDivWithMedia(
-                    attachmentDiv, processedMessage, actualBoardForLink, mediaLoadPromises,
-                    uniqueImageViewerHashes, isTopLevelMessage, 'default',
-                    renderedFullSizeImageHashes, viewerTopLevelAttachedVideoHashes, otkMediaDB
-                );
-            }
-
             if (isFiltered) {
-                const collapsibleContainer = wrapInCollapsibleContainer([textElement, attachmentDiv]);
-                messageDiv.appendChild(collapsibleContainer);
+                const hasQuotes = textElement.querySelector('div[data-message-id]') !== null;
+                const hasUnfilteredContent = ((processedMessage.text || '').trim().length > 0) || (processedMessage.attachment !== null);
+
+                if (!hasUnfilteredContent && !hasQuotes) {
+                    // Case 1: No unfiltered content and no quotes. Collapse the original message.
+                    const [originalTextElement, originalAttachmentDiv] = _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId, newAncestors, allThemeSettings, shouldDisplayFilenames, shouldDisableUnderline);
+                    const collapsibleContainer = wrapInCollapsibleContainer([originalTextElement, originalAttachmentDiv]);
+                    messageDiv.appendChild(collapsibleContainer);
+                } else {
+                    // Case 2: Has unfiltered content or quotes. Show processed content with an eye icon to toggle original.
+                    const blockIcon = messageHeader.querySelector('span[title*="blocked"]');
+                    if (blockIcon) {
+                        const eyeIcon = document.createElement('span');
+                        eyeIcon.innerHTML = '👁️';
+                        eyeIcon.style.cssText = 'margin-left: 5px; cursor: pointer;';
+                        eyeIcon.title = 'Show filtered content';
+                        blockIcon.parentNode.insertBefore(eyeIcon, blockIcon.nextSibling);
+
+                        const bodyContainer = document.createElement('div');
+                        const processedBodyContainer = document.createElement('div');
+                        processedBodyContainer.append(textElement);
+                        if (attachmentDiv) {
+                            processedBodyContainer.append(attachmentDiv);
+                        }
+
+                        const originalBodyContainer = document.createElement('div');
+                        originalBodyContainer.style.display = 'none';
+
+                        bodyContainer.appendChild(processedBodyContainer);
+                        bodyContainer.appendChild(originalBodyContainer);
+                        messageDiv.appendChild(bodyContainer);
+
+                        let originalBodyGenerated = false;
+
+                        eyeIcon.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            if (!originalBodyGenerated) {
+                                const [originalTextElement, originalAttachmentDiv] = _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId, newAncestors, allThemeSettings, shouldDisplayFilenames, shouldDisableUnderline);
+                                if(originalTextElement) originalBodyContainer.append(originalTextElement);
+                                if (originalAttachmentDiv) originalBodyContainer.append(originalAttachmentDiv);
+                                originalBodyGenerated = true;
+                            }
+
+                            const isProcessedVisible = processedBodyContainer.style.display !== 'none';
+                            processedBodyContainer.style.display = isProcessedVisible ? 'none' : 'block';
+                            originalBodyContainer.style.display = isProcessedVisible ? 'block' : 'none';
+                            eyeIcon.title = isProcessedVisible ? 'Hide filtered content' : 'Show filtered content';
+                        });
+                    } else {
+                        // Fallback if block icon isn't found for some reason
+                        messageDiv.appendChild(textElement);
+                        if (attachmentDiv) {
+                            messageDiv.appendChild(attachmentDiv);
+                        }
+                    }
+                }
             } else {
+                // Original logic for non-filtered messages
                 messageDiv.appendChild(textElement);
                 if (attachmentDiv) {
                     messageDiv.appendChild(attachmentDiv);
