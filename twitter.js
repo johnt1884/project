@@ -12,7 +12,7 @@
 (function () {
     'use strict';
 
-    const tweetRegex = /(https?:\/\/(?:twitter|x)\.com\/[a-zA-Z0-9_]+\/status\/[0-9]+)(?:\?[^ "']*)?/g;
+    const tweetRegex = /(https?:\/\/(?:twitter|x)\.com\/[a-zA-Z0-9_]+\/status\/[0-9]+)/g;
     const tweetCache = new Map();
     const embeddedTweets = new Set();
 
@@ -22,8 +22,7 @@
             return;
         }
 
-        const embedUrl = `https://publish.x.com/oembed?url=${encodeURIComponent(
-url)}`;
+        const embedUrl = `https://publish.x.com/oembed?url=${encodeURIComponent(url)}`;
 
         GM_xmlhttpRequest({
             method: "GET",
@@ -62,28 +61,24 @@ url)}`;
             const fragment = document.createDocumentFragment();
             let hasMatches = false;
 
-            tweetRegex.lastIndex = 0; // *** FIX for stateful regex ***
-
             while ((match = tweetRegex.exec(text)) !== null) {
                 hasMatches = true;
                 const before = text.slice(lastIndex, match.index);
                 if (before) fragment.appendChild(document.createTextNode(before));
 
-                const fullUrl = match[0];
-                const canonicalUrl = match[1];
-
-                if (embeddedTweets.has(fullUrl)) {
+                const tweetUrl = match[0];
+                if (embeddedTweets.has(tweetUrl)) {
                     lastIndex = tweetRegex.lastIndex;
                     continue; // skip duplicates
                 }
-                embeddedTweets.add(fullUrl);
+                embeddedTweets.add(tweetUrl);
 
                 const placeholder = document.createElement('div');
                 placeholder.textContent = 'Loading tweet...';
                 placeholder.style.fontStyle = 'italic';
                 fragment.appendChild(placeholder);
 
-                getTweetEmbed(canonicalUrl, (html) => {
+                getTweetEmbed(tweetUrl, (html) => {
                     if (!placeholder.parentNode) return;
 
                     if (html) {
@@ -103,7 +98,7 @@ url)}`;
                         placeholder.replaceWith(container);
                     } else {
                         const errorSpan = document.createElement('span');
-                        errorSpan.textContent = `Tweet unavailable or blocked in your region: ${fullUrl.trim()}`;
+                        errorSpan.textContent = `Tweet unavailable or blocked in your region: ${tweetUrl.trim()}`;
                         errorSpan.style.color = 'red';
                         errorSpan.style.fontWeight = 'bold';
                         errorSpan.style.margin = '0';
