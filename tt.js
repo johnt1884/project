@@ -1289,14 +1289,103 @@ function animateStatIncrease(statEl, plusNEl, from, to) {
         return title.substr(0, maxLength - 3) + '...'; // Fallback if no good space
     }
 
+    // --- Color Similarity Functions ---
+    const SIMILARITY_THRESHOLD = 20; // Lower is more similar. 1-5 is imperceptible, >10 is distinct.
+
+    function hexToRgb(hex) {
+        let shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+        hex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
+        let result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : null;
+    }
+
+    function rgbToLab(rgb) {
+        let r = rgb.r / 255, g = rgb.g / 255, b = rgb.b / 255;
+        r = (r > 0.04045) ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+        g = (g > 0.04045) ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+        b = (b > 0.04045) ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+
+        let x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047;
+        let y = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 1.00000;
+        let z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+
+        x = (x > 0.008856) ? Math.pow(x, 1/3) : (7.787 * x) + 16/116;
+        y = (y > 0.008856) ? Math.pow(y, 1/3) : (7.787 * y) + 16/116;
+        z = (z > 0.008856) ? Math.pow(z, 1/3) : (7.787 * z) + 16/116;
+
+        return { l: (116 * y) - 16, a: 500 * (x - y), b: 200 * (y - z) };
+    }
+
+    function deltaE(labA, labB){
+        const deltaL = labA.l - labB.l;
+        const deltaA = labA.a - labB.a;
+        const deltaB = labA.b - labB.b;
+        return Math.sqrt(Math.pow(deltaL, 2) + Math.pow(deltaA, 2) + Math.pow(deltaB, 2));
+    }
+
     function getThreadColor(threadId) {
-        if (!threadColors[threadId]) {
-            const usedColors = new Set(Object.values(threadColors));
-            const availableColors = COLORS.filter(c => !usedColors.has(c));
-            threadColors[threadId] = availableColors.length ? availableColors[0] : '#888'; // Default color if all are used
-            localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
+        if (threadColors[threadId]) {
+            return threadColors[threadId];
         }
-        return threadColors[threadId];
+
+        const usedColorHexes = new Set(Object.values(threadColors));
+
+        // If no colors are in use, pick a random one to start.
+        if (usedColorHexes.size === 0) {
+            const randomColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+            threadColors[threadId] = randomColor;
+            localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
+            return randomColor;
+        }
+
+        const availableColors = COLORS.filter(c => !usedColorHexes.has(c));
+
+        // If all colors from the palette are used, assign the fallback grey.
+        if (availableColors.length === 0) {
+            threadColors[threadId] = '#888'; // Fallback color
+            localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
+            return '#888';
+        }
+
+        // If there's only one color left, just use it.
+        if (availableColors.length === 1) {
+            threadColors[threadId] = availableColors[0];
+            localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
+            return availableColors[0];
+        }
+
+        const usedLabColors = Array.from(usedColorHexes).map(hex => rgbToLab(hexToRgb(hex)));
+
+        let bestCandidate = null;
+        let maxMinDeltaE = -1;
+
+        // Find the available color that is most dissimilar to all used colors.
+        for (const candidateHex of availableColors) {
+            const candidateLab = rgbToLab(hexToRgb(candidateHex));
+            let minDeltaE = Infinity;
+
+            // Find the smallest distance to any of the used colors.
+            for (const usedLab of usedLabColors) {
+                const dE = deltaE(candidateLab, usedLab);
+                if (dE < minDeltaE) {
+                    minDeltaE = dE;
+                }
+            }
+
+            // If this candidate's smallest distance is the largest we've seen so far, it's our new best candidate.
+            if (minDeltaE > maxMinDeltaE) {
+                maxMinDeltaE = minDeltaE;
+                bestCandidate = candidateHex;
+            }
+        }
+
+        threadColors[threadId] = bestCandidate;
+        localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
+        return bestCandidate;
     }
 
     function toggleImageBlur(filehash) {
@@ -4643,6 +4732,7 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
             localStorage.removeItem(LAST_SEEN_IMAGES_KEY);
             localStorage.removeItem(LAST_SEEN_VIDEOS_KEY);
             localStorage.removeItem(BLOCKED_THREADS_KEY);
+            threadFetchMetadata = {}; // Clear the network cache tracker
             consoleLog('[Clear] LocalStorage (threads, messages, seen embeds, media counts, ACTIVE theme) cleared/reset. CUSTOM THEMES PRESERVED.');
 
             if (otkMediaDB) {
