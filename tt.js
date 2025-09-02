@@ -1515,6 +1515,9 @@ function applyFiltersToMessageContent(message, rules) {
             return;
         }
 
+    const themeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+    const timePosition = themeSettings.otkThreadTimePosition || 'After Title';
+
         // Prepare display objects, ensuring messages exist for titles/times
         const threadDisplayObjects = activeThreads.map(threadId => {
             const messages = messagesByThreadId[threadId] || [];
@@ -1595,7 +1598,6 @@ function applyFiltersToMessageContent(message, rules) {
             const time = new Date(thread.firstMessageTime * 1000);
             const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-            const themeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
             const bracketStyle = themeSettings.otkThreadTimeBracketStyle || '[]';
             const bracketColor = themeSettings.otkThreadTimeBracketColor || 'var(--otk-gui-threadlist-time-color)';
 
@@ -1678,7 +1680,6 @@ function applyFiltersToMessageContent(message, rules) {
             titleTimeContainer.style.display = 'flex';
             titleTimeContainer.style.alignItems = 'baseline';
 
-            const timePosition = themeSettings.otkThreadTimePosition || 'After Title';
             const dividerEnabled = themeSettings.otkThreadTimeDividerEnabled || false;
             const dividerSymbol = themeSettings.otkThreadTimeDividerSymbol || '|';
             const dividerColor = themeSettings.otkThreadTimeDividerColor || '#ffffff';
@@ -1814,19 +1815,14 @@ function applyFiltersToMessageContent(message, rules) {
                 const textContentDiv = lastThreadItemDiv?.children[1];
                 if (textContentDiv && textContentDiv.firstChild) {
                     const titleTimeContainer = textContentDiv.firstChild;
-                    const timestampSpan = titleTimeContainer.querySelector('span');
+                    const titleLink = titleTimeContainer.querySelector('a');
 
-                    if (timestampSpan && timestampSpan.parentNode === titleTimeContainer) {
-                        timestampSpan.parentNode.insertBefore(hoverContainer, timestampSpan.nextSibling);
-                    } else if (titleTimeContainer) {
-                        titleTimeContainer.appendChild(hoverContainer);
-                        consoleWarn('Timestamp span not found for (+n), appended to title-time container.');
-                    } else if (textContentDiv) {
-                        textContentDiv.appendChild(hoverContainer);
-                        consoleWarn('Title-time container not found for (+n), appended to text content div.');
+                    if (timePosition === 'Before Title') {
+                        // When time is before the title, append after the title link.
+                        titleLink.parentNode.insertBefore(hoverContainer, titleLink.nextSibling);
                     } else {
-                        threadDisplayContainer.appendChild(hoverContainer);
-                        consoleWarn('Last thread item structure not found for (+n), appended to thread display container.');
+                        // When time is after the title, append to the end of the container.
+                        titleTimeContainer.appendChild(hoverContainer);
                     }
                 }
             } else {
@@ -2063,8 +2059,9 @@ function applyFiltersToMessageContent(message, rules) {
     const messageLimitEnabled = themeSettings.otkMessageLimitEnabled !== false;
     if (messageLimitEnabled) {
         const messageLimitValue = parseInt(themeSettings.otkMessageLimitValue || '500', 10);
+        consoleLog(`[ViewerPruning] Message limit check: Total messages=${allMessages.length}, Limit=${messageLimitValue}, Enabled=${messageLimitEnabled}`);
         if (allMessages.length > messageLimitValue) {
-            consoleLog(`[ViewerPruning] Message limit exceeded. Total: ${allMessages.length}, Limit: ${messageLimitValue}. Starting advanced pruning for viewer.`);
+            consoleLog(`[ViewerPruning] Message limit exceeded. Starting advanced pruning for viewer.`);
 
             const allMessagesById = new Map(allMessages.map(m => [m.id, m]));
             const newestMessages = allMessages.slice(-messageLimitValue);
@@ -2072,7 +2069,7 @@ function applyFiltersToMessageContent(message, rules) {
             const quoteRegex = />>(\d+)/g;
             const processingQueue = [...newestMessages];
 
-            consoleLog(`[ViewerPruning] Initial set of newest messages: ${processingQueue.length}`);
+            consoleLog(`[ViewerPruning] Initial set of newest messages for quote chasing: ${processingQueue.length}`);
 
             let processedCount = 0;
             const MAX_PROCESSED = processingQueue.length * 5; // Safety break
@@ -2274,6 +2271,9 @@ updateDisplayedStatistics(false); // Update stats after all media processing is 
             return;
         }
 
+        const messageElementsBefore = messagesContainer.querySelectorAll('.otk-message-container-main');
+        consoleLog(`[AppendLimit] Before append: DOM has ${messageElementsBefore.length} messages. renderedMessageIdsInViewer has ${renderedMessageIdsInViewer.size} IDs.`);
+
         let anchorInfo = { id: null, offset: 0 };
         const containerRect = messagesContainer.getBoundingClientRect();
         const messageElements = messagesContainer.querySelectorAll('.otk-message-container-main, .otk-message-container-quote-depth-1');
@@ -2302,19 +2302,27 @@ updateDisplayedStatistics(false); // Update stats after all media processing is 
         const themeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
         const separatorDiv = document.createElement('div');
         const separatorAlignment = themeSettings.otkNewMessagesSeparatorAlignment || 'left';
-        separatorDiv.style.cssText = `
-            border-top: 2px dashed var(--otk-new-messages-divider-color);
-            margin: 20px 0;
-            padding-top: 10px;
-            padding-bottom: 10px;
-            padding-left: 15px;
-            text-align: ${separatorAlignment.toLowerCase()};
-            color: var(--otk-new-messages-font-color);
-            font-size: var(--otk-new-messages-font-size);
-            font-style: italic;
-            width: 100%;
-            box-sizing: border-box;
-        `;
+        separatorDiv.style.borderTop = '2px dashed var(--otk-new-messages-divider-color)';
+        separatorDiv.style.margin = '20px 0';
+        separatorDiv.style.paddingTop = '10px';
+        separatorDiv.style.paddingBottom = '10px';
+        separatorDiv.style.color = 'var(--otk-new-messages-font-color)';
+        separatorDiv.style.fontSize = 'var(--otk-new-messages-font-size)';
+        separatorDiv.style.fontStyle = 'italic';
+        separatorDiv.style.width = '100%';
+        separatorDiv.style.boxSizing = 'border-box';
+
+        if (separatorAlignment.toLowerCase() === 'center') {
+            separatorDiv.style.textAlign = 'center';
+            const scrollbarWidth = messagesContainer.offsetWidth - messagesContainer.clientWidth;
+            if (scrollbarWidth > 0) {
+                separatorDiv.style.position = 'relative';
+                separatorDiv.style.left = `${scrollbarWidth / 2}px`;
+            }
+        } else {
+            separatorDiv.style.textAlign = separatorAlignment.toLowerCase();
+            separatorDiv.style.paddingLeft = '0px';
+        }
         const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
         separatorDiv.textContent = `--- ${currentTime} : ${newMessages.length} New Messages Loaded ---`;
         newContentDiv.appendChild(separatorDiv);
@@ -2333,11 +2341,14 @@ updateDisplayedStatistics(false); // Update stats after all media processing is 
 
         messagesContainer.appendChild(newContentDiv);
 
+        const messageElementsAfter = messagesContainer.querySelectorAll('.otk-message-container-main');
+        consoleLog(`[AppendLimit] After append: DOM has ${messageElementsAfter.length} messages. renderedMessageIdsInViewer has ${renderedMessageIdsInViewer.size} IDs.`);
+
         if (messageLimitEnabled) {
             const messageElements = messagesContainer.querySelectorAll('.otk-message-container-main');
             if (messageElements.length > messageLimitValue) {
                 const numToRemove = messageElements.length - messageLimitValue;
-                consoleLog(`[MessageLimit] Viewer message limit exceeded by ${numToRemove}. Removing oldest messages.`);
+                consoleLog(`[AppendLimit] Exceeds limit of ${messageLimitValue}. Removing ${numToRemove} oldest messages.`);
                 for (let i = 0; i < numToRemove; i++) {
                     const messageToRemove = messageElements[i];
                     const messageId = parseInt(messageToRemove.dataset.messageId, 10);
@@ -2346,6 +2357,8 @@ updateDisplayedStatistics(false); // Update stats after all media processing is 
                     }
                     messageToRemove.remove();
                 }
+                const messageElementsFinal = messagesContainer.querySelectorAll('.otk-message-container-main');
+                consoleLog(`[AppendLimit] After removal: DOM has ${messageElementsFinal.length} messages. renderedMessageIdsInViewer has ${renderedMessageIdsInViewer.size} IDs.`);
             }
         }
 
@@ -3062,7 +3075,7 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                         currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedText.length);
                     } else {
                         if (currentTextSegment.length > 0) {
-                            if (textElement.lastChild && textElement.lastChild.nodeType === 1 && !/^\s/.test(currentTextSegment)) {
+                            if (textElement.lastChild && textElement.lastChild.nodeType === 1 && textElement.lastChild.tagName !== 'BR' && !/^\s/.test(currentTextSegment)) {
                                 textElement.appendChild(document.createTextNode(' '));
                             }
                             textElement.appendChild(document.createTextNode(currentTextSegment));
@@ -3311,9 +3324,6 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                 width: 100%;
             `;
 
-            if (isFiltered) {
-                messageHeader.style.textDecoration = 'line-through';
-            }
 
             if (shouldDisableUnderline) {
                 messageHeader.style.borderBottom = 'none';
@@ -3350,6 +3360,9 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                 const idSpan = document.createElement('span');
                 idSpan.textContent = `#${message.id}`;
                 idSpan.style.cursor = 'pointer';
+                if (isFiltered) {
+                    idSpan.style.textDecoration = 'line-through';
+                }
                 idSpan.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const threadUrl = `https://boards.4chan.org/b/thread/${message.originalThreadId}`;
@@ -3370,9 +3383,13 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                     }
                 });
 
-                const timeText = document.createTextNode(`\u00A0| ${timestampParts.time}`);
+                const timeTextSpan = document.createElement('span');
+                timeTextSpan.textContent = `\u00A0| ${timestampParts.time}`;
+                if (isFiltered) {
+                    timeTextSpan.style.textDecoration = 'line-through';
+                }
                 leftHeaderContent.appendChild(idSpan);
-                leftHeaderContent.appendChild(timeText);
+                leftHeaderContent.appendChild(timeTextSpan);
 
                 const blockIcon = document.createElement('span');
                 blockIcon.innerHTML = '&#128711;'; // Block icon
@@ -3438,6 +3455,9 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
 
                 const dateSpan = document.createElement('span');
                 dateSpan.textContent = timestampParts.date;
+                if (isFiltered) {
+                    dateSpan.style.textDecoration = 'line-through';
+                }
 
                 messageHeader.appendChild(leftHeaderContent);
                 messageHeader.appendChild(dateSpan);
@@ -3451,6 +3471,9 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                 const idSpan = document.createElement('span');
                 idSpan.textContent = ` >>${message.id}`; // Changed prefix for quoted messages
                 idSpan.style.cursor = 'pointer';
+                if (isFiltered) {
+                    idSpan.style.textDecoration = 'line-through';
+                }
                 idSpan.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const threadUrl = `https://boards.4chan.org/b/thread/${message.originalThreadId}`;
@@ -4880,6 +4903,12 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
         const mainImagesCount = viewerIsOpen ? uniqueImageViewerHashes.size : totalImagesInStorage;
         const mainVideosCount = viewerIsOpen ? (viewerTopLevelAttachedVideoHashes.size + viewerTopLevelEmbedIds.size) : totalVideosInStorage;
 
+        if(viewerIsOpen) {
+            consoleLog(`[StatDebug] Viewer is OPEN. Using viewer-specific counts: Msgs=${mainMessagesCount}, Imgs=${mainImagesCount}, Vids=${mainVideosCount}`);
+        } else {
+            consoleLog(`[StatDebug] Viewer is CLOSED. Using total storage counts: Msgs=${mainMessagesCount}, Imgs=${mainImagesCount}, Vids=${mainVideosCount}`);
+        }
+
         const liveThreadsCount = activeThreads.length;
 
         const updateStatLine = (container, baseText, newCount, startCount, id) => {
@@ -5564,7 +5593,19 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
                     minute: '2-digit',
                     second: '2-digit'
                 });
-                clockTextElement.textContent = `${timeString} ${timeZoneName}`;
+
+                clockTextElement.innerHTML = ''; // Clear existing content
+                const timeSpan = document.createElement('span');
+                timeSpan.style.width = '65px'; // Fixed width to prevent "jiggle"
+                timeSpan.style.display = 'inline-block'; // Needed for width to apply
+                timeSpan.style.textAlign = 'center'; // Center the time within the fixed-width span
+                timeSpan.textContent = timeString;
+
+                const tzSpan = document.createElement('span');
+                tzSpan.textContent = ` ${timeZoneName}`;
+
+                clockTextElement.appendChild(timeSpan);
+                clockTextElement.appendChild(tzSpan);
             }
         });
     }
@@ -7280,7 +7321,7 @@ function applyThemeSettings(options = {}) {
         themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'new-msg-divider' }));
         themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Text:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'new-msg-font' }));
         themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "'Blocked Content' Font:", storageKey: 'blockedContentFontColor', cssVariable: '--otk-blocked-content-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'blocked-content-font' }));
-        themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Font Size (px):", storageKey: 'newMessagesFontSize', cssVariable: '--otk-new-messages-font-size', defaultValue: '16px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'new-msg-font-size', requiresRerender: true }));
+        themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Font Size (px):", storageKey: 'newMessagesFontSize', cssVariable: '--otk-new-messages-font-size', defaultValue: '16px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'new-msg-font-size', requiresRerender: false }));
         themeOptionsContainer.appendChild(createDropdownRow({
             labelText: 'New Msgs Separator Align:',
             storageKey: 'otkNewMessagesSeparatorAlignment',
@@ -7837,7 +7878,7 @@ function applyThemeSettings(options = {}) {
                 { storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' },
                 { storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'new-msg-divider' },
                 { storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'new-msg-font' },
-                { storageKey: 'newMessagesFontSize', cssVariable: '--otk-new-messages-font-size', defaultValue: '12px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'new-msg-font-size', requiresRerender: true },
+                { storageKey: 'newMessagesFontSize', cssVariable: '--otk-new-messages-font-size', defaultValue: '16px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'new-msg-font-size', requiresRerender: false },
                 { storageKey: 'blockedContentFontColor', cssVariable: '--otk-blocked-content-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'blocked-content-font' },
 
                 // Anchor Highlight Colors
