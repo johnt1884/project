@@ -77,7 +77,6 @@ document.addEventListener("visibilitychange", () => {
     let blurredImages = new Set();
     let blockedThreads = new Set();
     let cachedNewMessages = [];
-    let childToParentMap = {};
 
     // IndexedDB instance
     let otkMediaDB = null;
@@ -1343,50 +1342,37 @@ function animateStatIncrease(statEl, plusNEl, from, to) {
             return randomColor;
         }
 
+        const usedLabColors = Array.from(usedColorHexes).map(hex => rgbToLab(hexToRgb(hex)));
         const availableColors = COLORS.filter(c => !usedColorHexes.has(c));
 
-        // If all colors from the palette are used, assign the fallback grey.
         if (availableColors.length === 0) {
-            threadColors[threadId] = '#888'; // Fallback color
+            // All colors from the palette are used, assign the fallback.
+            threadColors[threadId] = '#888';
             localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
             return '#888';
         }
 
-        // If there's only one color left, just use it.
-        if (availableColors.length === 1) {
-            threadColors[threadId] = availableColors[0];
-            localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
-            return availableColors[0];
-        }
-
-        const usedLabColors = Array.from(usedColorHexes).map(hex => rgbToLab(hexToRgb(hex)));
-
-        let bestCandidate = null;
-        let maxMinDeltaE = -1;
-
-        // Find the available color that is most dissimilar to all used colors.
-        for (const candidateHex of availableColors) {
+        // Find colors that are not similar to any used color.
+        const dissimilarColors = availableColors.filter(candidateHex => {
             const candidateLab = rgbToLab(hexToRgb(candidateHex));
-            let minDeltaE = Infinity;
+            return usedLabColors.every(usedLab => {
+                return deltaE(candidateLab, usedLab) >= SIMILARITY_THRESHOLD;
+            });
+        });
 
-            // Find the smallest distance to any of the used colors.
-            for (const usedLab of usedLabColors) {
-                const dE = deltaE(candidateLab, usedLab);
-                if (dE < minDeltaE) {
-                    minDeltaE = dE;
-                }
-            }
-
-            // If this candidate's smallest distance is the largest we've seen so far, it's our new best candidate.
-            if (minDeltaE > maxMinDeltaE) {
-                maxMinDeltaE = minDeltaE;
-                bestCandidate = candidateHex;
-            }
+        let colorToAssign;
+        if (dissimilarColors.length > 0) {
+            // If we found dissimilar colors, pick one randomly from that subset.
+            colorToAssign = dissimilarColors[Math.floor(Math.random() * dissimilarColors.length)];
+        } else {
+            // Fallback: If all available colors are similar to at least one used color,
+            // just pick a random color from the available ones.
+            colorToAssign = availableColors[Math.floor(Math.random() * availableColors.length)];
         }
 
-        threadColors[threadId] = bestCandidate;
+        threadColors[threadId] = colorToAssign;
         localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
-        return bestCandidate;
+        return colorToAssign;
     }
 
     function toggleImageBlur(filehash) {
@@ -2144,22 +2130,6 @@ function applyFiltersToMessageContent(message, rules) {
         messagesByThreadId = await loadMessagesFromDB();
 
         let allMessages = getAllMessagesSorted();
-
-        const allMessageIds = new Set(allMessages.map(m => m.id));
-        childToParentMap = {}; // Reset the map
-        const quoteRegex = />>(\d+)/; // Regex to find the first quote link
-        allMessages.forEach(msg => {
-            if (msg.text) {
-                const match = msg.text.match(quoteRegex);
-                if (match) {
-                    const parentId = parseInt(match[1], 10);
-                    if (allMessageIds.has(parentId)) { // Ensure the quoted message exists
-                        childToParentMap[msg.id] = parentId;
-                    }
-                }
-            }
-        });
-        consoleLog(`[ParentMap] Built child-to-parent map with ${Object.keys(childToParentMap).length} entries.`);
 
     const themeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
     const messageLimitEnabled = themeSettings.otkMessageLimitEnabled !== false;
@@ -3226,164 +3196,6 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
 
     return [textElement, attachmentDiv];
 }
-
-    // --- New functions for loading parent messages dynamically ---
-
-    function getThemeSettings() {
-        try {
-            return JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
-        } catch (e) {
-            consoleError("Error parsing theme settings from localStorage:", e);
-            return {};
-        }
-    }
-
-    function restyleMessage(messageDiv, newDepth) {
-        const messageId = messageDiv.dataset.originalMessageId;
-        if (!messageId) return;
-
-        const allThemeSettings = getThemeSettings();
-        let depthKeyPart = newDepth === 0 ? '0' : (newDepth === 1 ? '1' : '2plus');
-
-        // 1. Update container styles
-        messageDiv.style.backgroundColor = `var(--otk-msg-depth${depthKeyPart}-bg-color)`;
-        messageDiv.style.color = `var(--otk-msg-depth${depthKeyPart}-text-color)`;
-        messageDiv.style.marginTop = newDepth === 0 ? '15px' : '10px';
-        messageDiv.style.marginBottom = newDepth === 0 ? '15px' : '0px';
-
-        // 2. Rebuild Header
-        const messageHeader = messageDiv.querySelector('.otk-message-header'); // Assuming header has a class
-        if (messageHeader) {
-            messageHeader.innerHTML = ''; // Clear old header
-            messageHeader.style.color = `var(--otk-msg-depth${depthKeyPart}-header-text-color)`;
-
-            const shouldDisableUnderline = allThemeSettings[`otkMsgDepth${depthKeyPart}DisableHeaderUnderline`] ?? (newDepth > 0);
-            messageHeader.style.borderBottom = shouldDisableUnderline ? 'none' : `1px solid var(--otk-viewer-quote${newDepth > 1 ? '2plus' : newDepth}-header-border-color)`;
-            messageHeader.style.paddingBottom = shouldDisableUnderline ? '0px' : '5px';
-            messageHeader.style.marginBottom = shouldDisableUnderline ? '0px' : '8px';
-
-
-            if (newDepth === 0) {
-                 // Simplified header for a message that became top-level
-                messageHeader.style.justifyContent = 'space-between';
-                const leftHeaderContent = document.createElement('span');
-                leftHeaderContent.style.display = 'flex';
-                leftHeaderContent.style.alignItems = 'center';
-                const idSpan = document.createElement('span');
-                idSpan.textContent = `#${messageId}`;
-                leftHeaderContent.appendChild(idSpan);
-                messageHeader.appendChild(leftHeaderContent);
-            } else {
-                messageHeader.style.justifyContent = 'flex-start';
-                const idSpan = document.createElement('span');
-                idSpan.textContent = `>>${messageId}`;
-                messageHeader.appendChild(idSpan);
-            }
-        }
-
-        // 3. Update Body font size
-        const messageBody = messageDiv.querySelector('.otk-message-body'); // Assuming body has a class
-        if (messageBody) {
-            messageBody.style.fontSize = `var(--otk-msg-depth${depthKeyPart}-content-font-size)`;
-        }
-
-        // 4. Recurse for children
-        const childQuote = messageBody ? messageBody.querySelector('div[data-original-message-id]') : null;
-        if (childQuote) {
-            if (newDepth + 1 >= 3) { // This was depth 2, now needs to be detached
-                const detachedId = childQuote.dataset.originalMessageId;
-                const grandParentDiv = messageDiv.closest('.otk-message-container-main');
-                childQuote.remove();
-
-                const detachedMessage = Object.values(messagesByThreadId).flat().find(m => m.id === parseInt(detachedId, 10));
-                if (detachedMessage && grandParentDiv) {
-                     const newDetachedDiv = createMessageElementDOM(detachedMessage, [], uniqueImageViewerHashes, detachedMessage.board || 'b', true, 0, getThreadColor(detachedMessage.originalThreadId), null);
-                     if (newDetachedDiv) {
-                         grandParentDiv.after(newDetachedDiv);
-                     }
-                }
-            } else {
-                restyleMessage(childQuote, newDepth + 1);
-            }
-        }
-    }
-
-    function createMessageShell(message, depth) {
-        const messageDiv = document.createElement('div');
-        messageDiv.setAttribute('data-message-id', message.id);
-        messageDiv.setAttribute('data-original-message-id', message.id);
-        messageDiv.classList.add('otk-message-container-main');
-
-        let depthKeyPart = depth === 0 ? '0' : (depth === 1 ? '1' : '2plus');
-        messageDiv.style.cssText = `
-            box-sizing: border-box; display: block;
-            background-color: var(--otk-msg-depth${depthKeyPart}-bg-color);
-            color: var(--otk-msg-depth${depthKeyPart}-text-color);
-            margin-top: ${depth === 0 ? '15px' : '10px'};
-            margin-bottom: ${depth === 0 ? '15px' : '0px'};
-            padding: 10px; border-radius: 5px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            overflow-x: hidden;
-        `;
-
-        const messageHeader = document.createElement('div');
-        messageHeader.className = 'otk-message-header'; // Add class for easier selection
-        messageHeader.style.cssText = `
-            font-size: 12px; font-weight: bold; display: flex; align-items: center; width: 100%;
-            color: var(--otk-msg-depth${depthKeyPart}-header-text-color);
-            border-bottom: 1px solid var(--otk-viewer-header-border-color);
-            padding-bottom: 5px; margin-bottom: 8px;
-        `;
-
-        if (depth === 0) {
-            messageHeader.style.justifyContent = 'space-between';
-            const leftHeaderContent = document.createElement('span');
-            leftHeaderContent.style.display = 'flex';
-            leftHeaderContent.style.alignItems = 'center';
-
-            const threadColor = getThreadColor(message.originalThreadId);
-            if (threadColor) {
-                const colorSquare = document.createElement('span');
-                colorSquare.style.cssText = `display: inline-block; width: 10px; height: 10px; background-color: ${threadColor}; margin-right: 6px; border-radius: 2px; flex-shrink: 0;`;
-                leftHeaderContent.appendChild(colorSquare);
-            }
-
-            const idSpan = document.createElement('span');
-            idSpan.textContent = `#${message.id}`;
-            leftHeaderContent.appendChild(idSpan);
-
-            const timestampParts = formatTimestampForHeader(message.time);
-            const timeTextSpan = document.createElement('span');
-            timeTextSpan.textContent = `\u00A0| ${timestampParts.time}`;
-            leftHeaderContent.appendChild(timeTextSpan);
-            messageHeader.appendChild(leftHeaderContent);
-
-            const dateSpan = document.createElement('span');
-            dateSpan.textContent = timestampParts.date;
-            messageHeader.appendChild(dateSpan);
-        }
-
-        messageDiv.appendChild(messageHeader);
-
-        const messageBody = document.createElement('div');
-        messageBody.className = 'otk-message-body';
-        messageBody.style.whiteSpace = 'pre-wrap';
-        messageBody.style.overflowWrap = 'break-word';
-        messageBody.style.wordBreak = 'normal';
-        messageBody.style.fontSize = `var(--otk-msg-depth${depthKeyPart}-content-font-size)`;
-
-        // Only append text and media, no quotes.
-        const [textElement, attachmentDiv] = _populateMessageBody(message, [], uniqueImageViewerHashes, message.board || 'b', true, 0, null, null, new Set(), getThemeSettings(), false, false);
-        const childQuote = textElement.querySelector('div[data-message-id]');
-        if(childQuote) childQuote.remove(); // Remove the recursive quote from the shell's body
-        messageBody.appendChild(textElement);
-        if(attachmentDiv) messageBody.appendChild(attachmentDiv);
-
-        messageDiv.appendChild(messageBody);
-        return messageDiv;
-    }
-
-
     // Signature now includes parentMessageId and ancestors
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId = null, ancestors = new Set()) {
         const filterRules = JSON.parse(localStorage.getItem(FILTER_RULES_V2_KEY) || '[]');
@@ -3881,50 +3693,11 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
                 }
             });
 
-            // Add a class to the header for easier selection during restyling
-            messageHeader.classList.add('otk-message-header');
-            // Add a class to the body for easier selection
-            const bodyContainer = messageDiv.querySelector('div:not(.otk-message-header)');
-            if(bodyContainer) bodyContainer.classList.add('otk-message-body');
-
-
             // Initial highlight check when the element is first created
             const initiallyStoredAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
             consoleLog("initiallyStoredAnchoredId", initiallyStoredAnchoredId, "persistentInstanceId", persistentInstanceId);
             if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
-            }
-
-            if (isTopLevelMessage && childToParentMap[message.id]) {
-                const parentId = childToParentMap[message.id];
-                const plusIcon = document.createElement('span');
-                plusIcon.innerHTML = '&#x2795;'; // Heavy plus sign
-                plusIcon.style.cssText = 'cursor: pointer; margin-right: 8px; font-size: 14px;';
-                plusIcon.title = 'Load previous message in chain';
-
-                plusIcon.addEventListener('click', (event) => {
-                    event.stopPropagation();
-                    const currentMessageDiv = plusIcon.closest('.otk-message-container-main');
-                    if (!currentMessageDiv) return;
-
-                    const parentMessage = Object.values(messagesByThreadId).flat().find(m => m.id === parseInt(parentId, 10));
-                    if (parentMessage) {
-                        const parentShell = createMessageShell(parentMessage, 0);
-                        currentMessageDiv.before(parentShell);
-
-                        const parentBody = parentShell.querySelector('.otk-message-body');
-                        if (parentBody) {
-                            parentBody.appendChild(currentMessageDiv);
-                            restyleMessage(currentMessageDiv, 1);
-                        }
-                    }
-                });
-
-                // Insert the plus icon into the header
-                const leftHeaderContent = messageHeader.querySelector('span');
-                if (leftHeaderContent) {
-                    leftHeaderContent.prepend(plusIcon);
-                }
             }
 
             if (isFiltered) {
@@ -4036,7 +3809,8 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
             catalog.forEach(page => {
                 page.threads.forEach(thread => {
                     let title = (thread.sub || '').toLowerCase();
-                const combinedText = title;
+                    let com = (thread.com || '').toLowerCase();
+                    const combinedText = title + " " + com;
 
                     if (keywords.some(keyword => combinedText.includes(keyword)) && !blockedThreads.has(Number(thread.no))) {
                         foundThreads.push({
@@ -4945,7 +4719,6 @@ async function backgroundRefreshThreadsAndMessages(options = {}) { // Added opti
             localStorage.removeItem(LAST_SEEN_IMAGES_KEY);
             localStorage.removeItem(LAST_SEEN_VIDEOS_KEY);
             localStorage.removeItem(BLOCKED_THREADS_KEY);
-            threadFetchMetadata = {}; // Clear the network cache tracker
             consoleLog('[Clear] LocalStorage (threads, messages, seen embeds, media counts, ACTIVE theme) cleared/reset. CUSTOM THEMES PRESERVED.');
 
             if (otkMediaDB) {
