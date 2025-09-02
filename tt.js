@@ -3822,8 +3822,7 @@ function _populateMessageBody(message, mediaLoadPromises, uniqueImageViewerHashe
             catalog.forEach(page => {
                 page.threads.forEach(thread => {
                     let title = (thread.sub || '').toLowerCase();
-                    let com = (thread.com || '').toLowerCase();
-                    const combinedText = title + " " + com;
+                const combinedText = title;
 
                     if (keywords.some(keyword => combinedText.includes(keyword)) && !blockedThreads.has(Number(thread.no))) {
                         foundThreads.push({
